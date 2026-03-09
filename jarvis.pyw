@@ -22,7 +22,7 @@ CONV_DIR  = os.path.join(DATA_DIR, "conversations")
 MEM_FILE  = os.path.join(DATA_DIR, "memory.json")
 SETT_FILE = os.path.join(DATA_DIR, "settings.json")
 VOICE_DIR = os.path.join(APP_DIR, "jarvis_voices")
-STT_MODEL_DIR = r"path"  # local model folder
+STT_MODEL_DIR = r"C:\Users\Hadi\Desktop\holder\Jarvis\jarvis_stt"  # local model folder
 for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -30,8 +30,8 @@ for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 OLLAMA_HOST       = "127.0.0.1"
 OLLAMA_PORT       = 11434
 OLLAMA_URL        = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
-WIN_W, WIN_H      = 460, 780
-ANTHROPIC_API_KEY = "YOUR_API_KEY_HERE"
+WIN_W, WIN_H      = 400, 780
+ANTHROPIC_API_KEY = ""
 MAX_HISTORY       = 40
 
 VOICES = {
@@ -1120,7 +1120,7 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(WIN_W,WIN_H)
         screen=QApplication.primaryScreen().geometry()
-        self.move(screen.width()-WIN_W-20,(screen.height()-WIN_H)//2)
+        self.move(screen.width()-WIN_W-10,+10)
 
         self._build_ui()
         self._lock_input()   # locked until boot + greeting animation complete
@@ -1204,7 +1204,7 @@ class MainWindow(QMainWindow):
         root=QWidget(); root.setObjectName("root")
         root.setStyleSheet(f"#root{{background:{BG};}}")
         self.setCentralWidget(root)
-        eff=QGraphicsOpacityEffect(root); eff.setOpacity(0.92); root.setGraphicsEffect(eff)
+        eff=QGraphicsOpacityEffect(root); eff.setOpacity(0.9); root.setGraphicsEffect(eff)
         main=QVBoxLayout(root); main.setContentsMargins(0,0,0,0); main.setSpacing(0)
 
         # ── Title bar
@@ -1248,12 +1248,6 @@ class MainWindow(QMainWindow):
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             b.clicked.connect(cb); tbl.addWidget(b)
 
-        self.top_btn=QPushButton("[ ⬆ ]"); self.top_btn.setFont(make_font(bold=True,size=8))
-        self.top_btn.setFixedHeight(44)
-        self.top_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{TEXTMUT};border:none;padding:0 8px;}}"
-                                   f"QPushButton:hover{{color:{ACCENT};}}")
-        self.top_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.top_btn.clicked.connect(self._toggle_top); tbl.addWidget(self.top_btn)
 
         for text,tip,slot,hover in [("[ — ]","Minimize",self.showMinimized,ACCDIM),
                                      ("[ × ]","Close",self.close,"#4a1010")]:
@@ -1397,6 +1391,9 @@ class MainWindow(QMainWindow):
         a4.setFont(make_font(size=9))
         if is_claude: a4.setEnabled(False)
 
+        a5=menu.addAction(f"ON TOP:  {'ON ✓' if self.stay_on_top else 'OFF'}")
+        a5.setFont(make_font(size=9))
+
         # Show menu below the ⚙ button
         pos=self.settings_btn.mapToGlobal(
             QPoint(0, self.settings_btn.height()))
@@ -1412,6 +1409,8 @@ class MainWindow(QMainWindow):
             self.auto_scroll=not self.auto_scroll
         elif chosen==a4:
             if not is_claude: self.think_on=not self.think_on
+        elif chosen==a5:
+            self._toggle_top()
 
     # ── Top button ────────────────────────────────────────────────────────────
     def _toggle_top(self):
@@ -1419,11 +1418,6 @@ class MainWindow(QMainWindow):
         flags=Qt.WindowType.FramelessWindowHint
         if self.stay_on_top: flags|=Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags); self.show()
-        col=ACCENT if self.stay_on_top else TEXTMUT
-        self.top_btn.setStyleSheet(
-            f"QPushButton{{background:{'#001a22' if self.stay_on_top else 'transparent'};"
-            f"color:{col};border:none;padding:0 8px;}}"
-            f"QPushButton:hover{{color:{ACCENT};}}")
 
     def _on_scroll_changed(self,val):
         sb=self.scroll.verticalScrollBar()
