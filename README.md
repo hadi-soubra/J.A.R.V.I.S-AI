@@ -33,6 +33,7 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
   - [Conversation History](#conversation-history)
   - [Think Mode](#think-mode)
   - [Stopping a Response](#stopping-a-response)
+  - [PC Control](#pc-control)
 - [Customisation](#customisation)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -53,6 +54,7 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
 - **Input locking** — input is disabled during boot and greeting animations
 - **ESC to stop** — press ESC at any time to instantly stop TTS playback
 - **Auto-scroll** toggle, always-on-top toggle, stay-on-top window mode
+- **PC control** — launch apps, open websites, check system stats, control power settings, open files and folders — all by just asking
 - **Fully offline-capable** — no internet required if using local models and voices
 
 ---
@@ -109,7 +111,7 @@ python --version
 Open a terminal (Command Prompt or PowerShell) and run:
 
 ```bash
-pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard numpy
+pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard numpy psutil
 ```
 
 **What each package does:**
@@ -123,6 +125,7 @@ pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard numpy
 | `sounddevice` | Zero-latency audio playback |
 | `keyboard` | Global hotkey listener (Right Alt for STT) |
 | `numpy` | Audio buffer manipulation |
+| `psutil` | Live system stats — CPU, RAM, battery, disk |
 
 > **Note for pyaudio on Windows:** If `pip install pyaudio` fails, download the prebuilt wheel from [here](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio) and install it with `pip install <downloaded_file>.whl`.
 
@@ -501,6 +504,35 @@ Think mode enables extended chain-of-thought reasoning — the model thinks thro
 
 ---
 
+### PC Control
+
+JARVIS can control your PC directly. Just ask naturally and it will execute the right command.
+
+**Launching apps** — say the app name and JARVIS opens it:
+> *"Open Spotify"*, *"Launch VS Code"*, *"Open Steam"*, *"Start Blender"*
+
+**Launching games:**
+> *"Launch Rocket League"*, *"Open RDR2"*, *"Start Sekiro"*, *"Open Minecraft"*
+
+**Web search / open URL:**
+> *"Search YouTube for lo-fi beats"*, *"Open github.com"*, *"Google how to reverse a linked list"*
+
+**System info** — JARVIS reads your live stats and reports them:
+> *"How's my RAM?"*, *"What's my CPU usage?"*, *"Check my battery"*
+
+**Power management:**
+> *"Switch to high performance mode"* — best for gaming
+> *"Switch to balanced mode"* — normal use
+
+**System commands:**
+> *"Lock the screen"*, *"Put the PC to sleep"*, *"Shut down"*, *"Restart"*
+> Shutdown and restart require a confirmation click before executing.
+
+**File & folder operations:**
+> *"Open my Downloads folder"*, *"Open my Documents"*, *"Find report.pdf and open it"*
+
+---
+
 ## Customisation
 
 **Change the greeting:**
@@ -542,6 +574,54 @@ ERR    = "#ff4444"   # Red errors
 
 ---
 
+**Add or remove apps from the launcher:**
+
+Find the `APPS` dictionary near the top of `jarvis.pyw`. Add a new entry with the name you want to say as the key and the full path or URI as the value:
+
+```python
+APPS = {
+    "zen":        r"C:\Program Files\Zen Browser\zen.exe",
+    "spotify":    r"C:\Users\YourName\AppData\Roaming\Spotify\Spotify.exe",
+    # Add your own:
+    "notepad":    "notepad.exe",
+    "discord":    r"C:\Users\YourName\AppData\Local\Discord\Update.exe",
+    "mygame":     "steam://rungameid/YOUR_GAME_ID",
+}
+```
+
+To find a Steam game's ID, right-click it in your Steam library → **Properties** → the number in the URL is the game ID.
+
+For Epic Games, right-click the game shortcut → **Properties** → copy the full Target URI.
+
+You can add as many aliases as you want for the same app:
+```python
+"vscode":  r"C:\...\Code.exe",
+"code":    r"C:\...\Code.exe",   # same path, different trigger word
+"editor":  r"C:\...\Code.exe",
+```
+
+After adding a new app, also update the app list in `JARVIS_SYSTEM` so the model knows about it:
+```python
+"[RUN: appname] - launch an app. Apps: zen, spotify, ..., yournewapp\n"
+```
+
+---
+
+**Add folders JARVIS can search for files in:**
+
+Find the `ALLOWED_DIRS` list near the top of `jarvis.pyw`:
+```python
+ALLOWED_DIRS = [
+    os.path.expanduser("~\\Desktop"),
+    os.path.expanduser("~\\Documents"),
+    os.path.expanduser("~\\Downloads"),
+    # Add your own:
+    r"C:\Users\YourName\Projects",
+]
+```
+
+---
+
 ## Troubleshooting
 
 **JARVIS won't start / Python not found**
@@ -572,6 +652,16 @@ ERR    = "#ff4444"   # Red errors
 **Anthropic API errors**
 - Double-check your API key in `jarvis.pyw`
 - Make sure your Anthropic account has credits — check [console.anthropic.com](https://console.anthropic.com/)
+
+**App won't launch / "App not found"**
+- Check the path in the `APPS` dictionary exactly matches the `.exe` location on your PC
+- Right-click the app shortcut → Properties → copy the exact Target path
+- Make sure the app name you're saying matches a key in the `APPS` dictionary
+- For Steam games use `steam://rungameid/GAME_ID` — find the ID in Steam → game Properties → the number in the URL
+- For Epic games right-click the desktop shortcut → Properties → copy the full Target URI
+
+**"psutil not installed" when checking system stats**
+- Run: `pip install psutil`
 
 **Task Scheduler launches JARVIS at boot, not after login**
 - Make sure the trigger is set to **"On workstation unlock"**
