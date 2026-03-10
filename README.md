@@ -2,7 +2,7 @@
 
 **Just A Rather Very Intelligent System**
 
-A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Supports local LLMs via Ollama, cloud models via the Anthropic API, voice synthesis via Piper TTS, and speech-to-text via faster-whisper — all in a sleek dark terminal UI with a cinematic boot sequence.
+A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Supports local LLMs via Ollama, cloud models via the Anthropic API, voice synthesis via Piper TTS, and speech-to-text via faster-whisper all in a sleek dark terminal UI with a cinematic boot sequence.
 ![AI view](assets/view.png)
 ---
 
