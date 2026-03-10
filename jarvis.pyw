@@ -4,7 +4,7 @@ pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard
 """
 
 import sys, os, json, time, socket, subprocess, threading, base64, datetime, uuid, re, queue
-import urllib.request, urllib.error, io, wave, tempfile
+import urllib.request, urllib.error, urllib.parse, io, wave, tempfile, webbrowser
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
@@ -31,7 +31,7 @@ OLLAMA_HOST       = "127.0.0.1"
 OLLAMA_PORT       = 11434
 OLLAMA_URL        = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
 WIN_W, WIN_H      = 400, 780
-ANTHROPIC_API_KEY = ""
+ANTHROPIC_API_KEY = "YOUR_API_KEY_HERE"
 MAX_HISTORY       = 40
 
 VOICES = {
@@ -57,7 +57,21 @@ PDF_EXT = ".pdf"
 JARVIS_SYSTEM = (
     "You are J.A.R.V.I.S (Just A Rather Very Intelligent System), "
     "the personal AI assistant. Be concise, direct, and highly capable. "
-    "Address the user as 'sir' occasionally. No unnecessary preamble."
+    "Address the user as 'sir' occasionally. No unnecessary preamble.\n\n"
+    "You can control the PC using special command tags in your response.\n\n"
+    "AVAILABLE COMMANDS:\n"
+    "[RUN: appname] - launch an app. Apps: zen, spotify, vscode, explorer, outlook, bambu, blender, tlauncher, steam, epicgames, rdr2, sekiro, breadandfred, minecraft, rocketleague\n"
+    "[WEB: query or url] - open browser with Google search or URL\n"
+    "[INFO: system] - get live CPU, RAM, battery, disk stats\n"
+    "[CMD: shutdown] - shutdown the PC (asks confirmation)\n"
+    "[CMD: restart] - restart the PC (asks confirmation)\n"
+    "[CMD: sleep] - put PC to sleep\n"
+    "[CMD: lock] - lock the screen\n"
+    "[CMD: high_performance] - High Performance power plan (gaming)\n"
+    "[CMD: balanced] - Balanced power plan (normal use)\n"
+    "[FILE: open, filename] - find and open a file\n"
+    "[FILE: folder, name] - open a folder in Explorer\n"
+    "Only use commands when user clearly wants an action. Never use tags in hypothetical responses."
 )
 
 # The greeting shown (and spoken) when JARVIS starts or a new chat is opened.
@@ -601,6 +615,169 @@ class StreamWorker(QThread):
 class OllamaInitWorker(QThread):
     done=pyqtSignal(bool,str)
     def run(self): self.done.emit(*wait_ollama())
+
+# ── PC Control — app launcher & tools ─────────────────────────────────────────
+# Edit this dictionary to add/remove apps. Key = name to say, value = path or URI.
+APPS = {
+    # Browsers & productivity
+    "zen":              r"C:\Program Files\Zen Browser\zen.exe",
+    "browser":          r"C:\Program Files\Zen Browser\zen.exe",
+    "spotify":          r"C:\Users\Hadi\AppData\Roaming\Spotify\Spotify.exe",
+    "music":          r"C:\Users\Hadi\AppData\Roaming\Spotify\Spotify.exe",
+    "vscode":           r"C:\Users\Hadi\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+    "code":             r"C:\Users\Hadi\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+    "explorer":         "explorer.exe",
+    "files":            "explorer.exe",
+    "outlook":          r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
+    "email":          r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
+    # Creative
+    "bambu":            r"C:\Program Files\Bambu Studio\bambu-studio.exe",
+    "bamboo":           r"C:\Program Files\Bambu Studio\bambu-studio.exe",
+    "slicer":           r"C:\Program Files\Bambu Studio\bambu-studio.exe",
+    "blender":          r"C:\Program Files\Blender Foundation\Blender 5.0\blender-launcher.exe",
+    # Launchers
+    "steam":            r"C:\Program Files (x86)\Steam\steam.exe",
+    "epicgames":        r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
+    "epic":             r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
+    # Games
+    "rdr2":             "steam://rungameid/1174180",
+    "red dead":         "steam://rungameid/1174180",
+    "rdr":              "steam://rungameid/1174180",
+    "sekiro":           "steam://rungameid/814380",
+    "rocketleague":     "com.epicgames.launcher://apps/9773aa1aa54f4f7b80e44bef04986cea%3A530145df28a24424923f5828cc9031a1%3ASugar?action=launch&silent=true",
+    "rocket league":    "com.epicgames.launcher://apps/9773aa1aa54f4f7b80e44bef04986cea%3A530145df28a24424923f5828cc9031a1%3ASugar?action=launch&silent=true",
+    "breadandfred":     r"C:\Bread.and.Fred.v2025.03.07(1)\Bread.and.Fred.v2025.03.07\Bread.and.Fred.v2025.03.07\Bread&Fred.exe",
+    "bread and fred":   r"C:\Bread.and.Fred.v2025.03.07(1)\Bread.and.Fred.v2025.03.07\Bread.and.Fred.v2025.03.07\Bread&Fred.exe",
+    "tlauncher":        r"C:\Users\Hadi\AppData\Roaming\.minecraft\TLauncher.exe",
+    "minecraft":        r"C:\Users\Hadi\AppData\Roaming\.minecraft\TLauncher.exe",
+}
+
+# Folders JARVIS is allowed to search for files in
+ALLOWED_DIRS = [
+    os.path.expanduser("~\\Desktop"),
+    os.path.expanduser("~\\Documents"),
+    os.path.expanduser("~\\Downloads"),
+]
+
+def _get_system_info():
+    """Return formatted live system stats via psutil."""
+    try:
+        import psutil
+        cpu  = psutil.cpu_percent(interval=0.5)
+        ram  = psutil.virtual_memory()
+        disk = psutil.disk_usage('C:\\')
+        bat  = psutil.sensors_battery()
+        lines = [
+            f"CPU:     {cpu:.1f}%",
+            f"RAM:     {ram.percent:.1f}%  ({ram.used//1024**3:.1f} GB / {ram.total//1024**3:.1f} GB)",
+            f"Disk C:  {disk.percent:.1f}%  ({disk.free//1024**3:.1f} GB free)",
+        ]
+        if bat:
+            status = "Charging" if bat.power_plugged else "Discharging"
+            lines.append(f"Battery: {bat.percent:.0f}%  ({status})")
+        return "\n".join(lines)
+    except ImportError:
+        return "psutil not installed. Run: pip install psutil"
+    except Exception as e:
+        return f"Could not get system info: {e}"
+
+def _find_file(name):
+    """Search ALLOWED_DIRS for a file matching name (case-insensitive)."""
+    name_lower = name.lower()
+    for root_dir in ALLOWED_DIRS:
+        for dirpath, _, files in os.walk(root_dir):
+            for f in files:
+                if name_lower in f.lower():
+                    return os.path.join(dirpath, f)
+    return None
+
+def execute_pc_command(tag, arg, confirm_cb=None):
+    """Route a parsed [TAG: arg] to the correct PC action. Returns result string."""
+    tag = tag.upper().strip()
+    arg = arg.strip()
+
+    if tag == "RUN":
+        key = arg.lower().strip()
+        path = APPS.get(key)
+        if not path:
+            for k, v in APPS.items():
+                if k in key or key in k:
+                    path = v; break
+        if path:
+            try:
+                if any(path.startswith(p) for p in ("steam://", "com.epicgames.", "http")):
+                    webbrowser.open(path)
+                else:
+                    kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform=="win32" else {}
+                    subprocess.Popen([path], **kw)
+                return f"Launched {arg}."
+            except Exception as e:
+                return f"Failed to launch {arg}: {e}"
+        return f"App '{arg}' not found. Add it to the APPS dictionary in jarvis.pyw."
+
+    elif tag == "WEB":
+        try:
+            url = arg if arg.startswith("http") else f"https://www.google.com/search?q={urllib.parse.quote(arg)}"
+            webbrowser.open(url)
+            return f"Opened browser: {arg}"
+        except Exception as e:
+            return f"Browser failed: {e}"
+
+    elif tag == "INFO":
+        return _get_system_info()
+
+    elif tag == "CMD":
+        cmd = arg.lower().strip()
+        if cmd in ("shutdown", "restart"):
+            if confirm_cb and not confirm_cb(f"Are you sure you want to {cmd}?"):
+                return f"{cmd.capitalize()} cancelled."
+        try:
+            if   cmd == "shutdown":
+                subprocess.run(["shutdown", "/s", "/t", "10"]); return "Shutting down in 10 seconds."
+            elif cmd == "restart":
+                subprocess.run(["shutdown", "/r", "/t", "10"]); return "Restarting in 10 seconds."
+            elif cmd == "sleep":
+                subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0"]); return "Going to sleep."
+            elif cmd == "lock":
+                subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"]); return "Screen locked."
+            elif cmd == "high_performance":
+                subprocess.run(["powercfg", "/s", "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"], shell=True)
+                return "Switched to High Performance power plan."
+            elif cmd == "balanced":
+                subprocess.run(["powercfg", "/s", "381b4222-f694-41f0-9685-ff5bb260df2e"], shell=True)
+                return "Switched to Balanced power plan."
+            else:
+                return f"Unknown command: {cmd}"
+        except Exception as e:
+            return f"Command failed: {e}"
+
+    elif tag == "FILE":
+        parts = arg.split(",", 1)
+        op    = parts[0].strip().lower()
+        param = parts[1].strip() if len(parts) > 1 else ""
+        if op == "open":
+            path = _find_file(param)
+            if path:
+                try: os.startfile(path); return f"Opened: {path}"
+                except Exception as e: return f"Could not open: {e}"
+            return f"File '{param}' not found in Desktop, Documents, or Downloads."
+        elif op == "folder":
+            folders = {
+                "desktop":   os.path.expanduser("~\\Desktop"),
+                "documents": os.path.expanduser("~\\Documents"),
+                "downloads": os.path.expanduser("~\\Downloads"),
+                "music":     os.path.expanduser("~\\Music"),
+                "pictures":  os.path.expanduser("~\\Pictures"),
+                "videos":    os.path.expanduser("~\\Videos"),
+            }
+            path = folders.get(param.lower(), param)
+            try: subprocess.Popen(["explorer.exe", path]); return f"Opened folder: {path}"
+            except Exception as e: return f"Could not open folder: {e}"
+    return None
+
+def parse_commands(text):
+    """Extract all [TAG: arg] command tags from model response text."""
+    return re.findall(r'\[([A-Z]+):\s*([^\]]+)\]', text, re.IGNORECASE)
 
 # ── UI helpers ───────────────────────────────────────────────────────────────
 # Small factory functions used throughout the UI to keep widget creation concise.─
@@ -1817,7 +1994,23 @@ class MainWindow(QMainWindow):
         if not aborted:
             self.history.append({"role":"assistant","content":text})
             save_conv(self._conv_id,conv_title(self.history),self.history)
+            # Execute any PC control commands embedded in the response
+            for tag, arg in parse_commands(text):
+                result = execute_pc_command(tag, arg, confirm_cb=self._confirm_destructive)
+                if result:
+                    self._add_widget(SystemMessage(f"◈  {result}", ACCENT))
         self.busy=False; self.send_btn.setEnabled(True)
+
+    def _confirm_destructive(self, message):
+        """Confirmation dialog for destructive commands like shutdown/restart."""
+        from PyQt6.QtWidgets import QMessageBox
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("JARVIS — Confirm")
+        dlg.setText(message)
+        dlg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        dlg.setDefaultButton(QMessageBox.StandardButton.No)
+        dlg.setStyleSheet(f"background:{BG};color:{TEXT};")
+        return dlg.exec() == QMessageBox.StandardButton.Yes
 
 
 if __name__=="__main__":
