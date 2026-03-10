@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QTextEdit, QScrollArea, QComboBox, QSizePolicy,
     QGraphicsOpacityEffect, QFileDialog, QDialog, QMenu,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
-from PyQt6.QtGui import QFont, QCursor, QAction
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint, QMetaObject
+from PyQt6.QtGui import QFont, QCursor, QAction, QIcon
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 APP_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -968,7 +968,7 @@ class UserMessage(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background:{BG};")
         layout=QVBoxLayout(self); layout.setContentsMargins(10,8,10,8); layout.setSpacing(4)
-        layout.addWidget(lbl("[ USER ]",OK_COL,make_font(bold=True,size=9)))
+        layout.addWidget(lbl("[ HADI ]",OK_COL,make_font(bold=True,size=9)))
         if attachments:
             cr=QWidget(); cr.setStyleSheet(f"background:{BG};")
             crl=QHBoxLayout(cr); crl.setContentsMargins(0,0,0,0); crl.setSpacing(4)
@@ -1265,6 +1265,7 @@ class MainWindow(QMainWindow):
     _sig_status     = pyqtSignal(str,str)
     _sig_play_wav   = pyqtSignal(bytes)      # safely play pre-baked wav from any thread
     _sig_greet_ready= pyqtSignal(int, bytes) # (interval_ms, wav_bytes) — start greeting in sync
+    _sig_toggle_win = pyqtSignal()           # raise/minimize window from hotkey thread
 
     def __init__(self):
         super().__init__()
@@ -1318,6 +1319,7 @@ class MainWindow(QMainWindow):
         _stt_proc = STTProcess(status_cb=_stt_status)
 
         self._sig_play_wav.connect(lambda b: _tts.play_pcm(b) if _tts else None)
+        self._sig_toggle_win.connect(self._toggle_window)
         self._sig_greet_ready.connect(self._on_greet_ready)
         self._sig_chunk.connect(self._on_chunk)
         self._sig_think.connect(self._on_think)
@@ -1811,6 +1813,7 @@ class MainWindow(QMainWindow):
                 import keyboard
                 keyboard.hook(_handle)
                 keyboard.add_hotkey("esc", lambda: _tts.stop() if _tts else None, suppress=False)
+                keyboard.add_hotkey("ctrl+alt+j", lambda: self._sig_toggle_win.emit(), suppress=False)
                 keyboard.wait()
             except Exception as e:
                 print(f"[STT] keyboard hotkey failed: {e}")
@@ -1825,6 +1828,14 @@ class MainWindow(QMainWindow):
     def _hotkey_release(self):
         if self._recording:
             self._sig_stt_done.emit("__STOP__")
+    
+    def _toggle_window(self):
+        if self.isMinimized() or not self.isVisible():
+            self.showNormal()
+            self.activateWindow()
+            self.raise_()
+        else:
+            self.showMinimized()
 
     def _set_mic_recording(self):
         self.mic_btn.setText("[ ● ]")
@@ -2019,6 +2030,10 @@ class MainWindow(QMainWindow):
 
 
 if __name__=="__main__":
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("jarvis.app")
     app=QApplication(sys.argv); app.setStyle("Fusion")
     win=MainWindow(); win.show()
+    win.setWindowIcon(QIcon("assets/jarvis.ico"))
+    app.setWindowIcon(QIcon("assets/jarvis.ico"))
     sys.exit(app.exec())
