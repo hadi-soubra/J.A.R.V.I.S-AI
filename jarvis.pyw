@@ -1276,7 +1276,7 @@ class MainWindow(QMainWindow):
         self._current_ai=None; self._attachments=[]
         self._conv_id=str(uuid.uuid4())
         self._memory=load_memory()
-        self._recording=False; self._audio_frames=[]
+        self._recording=False; self._audio_frames=[]; self._right_alt_down=False
         self._transcribing=False
         self._input_locked=False
         self._hotkey_thread=None
@@ -1506,13 +1506,13 @@ class MainWindow(QMainWindow):
         self.chips_layout.addStretch(); self.chips_widget.setVisible(False)
         ial.addWidget(self.chips_widget)
         self.prompt=PromptBox()
-        self.prompt.setPlaceholderText("Enter message…  (Enter=send, Shift+Enter=newline, /remember <fact>)")
+        self.prompt.setPlaceholderText("Enter message… /remember <fact>")
         self.prompt.installEventFilter(self); ial.addWidget(self.prompt)
 
         br=QWidget(); br.setStyleSheet(f"background:{INPUT_BG};")
         brl=QHBoxLayout(br); brl.setContentsMargins(0,0,0,0); brl.setSpacing(6)
 
-        self.mic_btn=QPushButton("[ 🎤 ]"); self.mic_btn.setFont(make_font(bold=True,size=9))
+        self.mic_btn=QPushButton("[ REC ]"); self.mic_btn.setFont(make_font(bold=True,size=9))
         self.mic_btn.setStyleSheet(f"QPushButton{{background:{TEXTAREA};color:{ACCENT};border:none;padding:6px 10px;}}"
                                    f"QPushButton:hover{{background:{ACCDIM};}}")
         self.mic_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -1797,16 +1797,21 @@ class MainWindow(QMainWindow):
 
     # ── STT ───────────────────────────────────────────────────────────────────
     def _start_hotkey_listener(self):
+        def _handle(e):
+            if e.name != "right alt": return
+            if e.event_type == "down" and not self._right_alt_down:
+                self._right_alt_down = True
+                self._hotkey_press()
+            elif e.event_type == "up" and self._right_alt_down:
+                self._right_alt_down = False
+                self._hotkey_release()
+
         def _listen():
             try:
                 import keyboard
-                keyboard.add_hotkey("right alt", self._hotkey_press, suppress=False)
-                keyboard.add_hotkey("right alt+right alt", lambda: None)  # prevent double
+                keyboard.hook(_handle)
                 keyboard.add_hotkey("esc", lambda: _tts.stop() if _tts else None, suppress=False)
-                # Actually use on_press/on_release for hold behaviour
-                keyboard.on_press_key("right alt", lambda _: self._hotkey_press(), suppress=False)
-                keyboard.on_release_key("right alt", lambda _: self._hotkey_release(), suppress=False)
-                keyboard.wait()  # blocks this thread
+                keyboard.wait()
             except Exception as e:
                 print(f"[STT] keyboard hotkey failed: {e}")
         self._hotkey_thread=threading.Thread(target=_listen,daemon=True)
@@ -1828,7 +1833,7 @@ class MainWindow(QMainWindow):
             f"QPushButton:hover{{background:#501010;}}")
 
     def _set_mic_idle(self):
-        self.mic_btn.setText("[ 🎤 ]")
+        self.mic_btn.setText("[ REC ]")
         self.mic_btn.setStyleSheet(
             f"QPushButton{{background:{TEXTAREA};color:{ACCENT};border:none;padding:6px 10px;}}"
             f"QPushButton:hover{{background:{ACCDIM};}}")
