@@ -9,7 +9,7 @@ import urllib.request, urllib.error, urllib.parse, io, wave, tempfile, webbrowse
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QScrollArea, QComboBox, QSizePolicy,
+    QTextEdit, QTextBrowser, QScrollArea, QComboBox, QSizePolicy,
     QFileDialog, QDialog, QMenu,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
@@ -22,7 +22,7 @@ CONV_DIR  = os.path.join(DATA_DIR, "conversations")
 MEM_FILE  = os.path.join(DATA_DIR, "memory.json")
 SETT_FILE = os.path.join(DATA_DIR, "settings.json")
 VOICE_DIR = os.path.join(APP_DIR, "jarvis_voices")
-STT_MODEL_DIR = r"C:\Users\Hadi\Desktop\holder\Jarvis\jarvis_stt"  # local model folder
+STT_MODEL_DIR = r"C:\Users\Hadi\Desktop\holder\J.A.R.V.I.S-AI\jarvis_stt"  # local model folder
 for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -411,7 +411,7 @@ class STTProcess:
     def _start(self):
         try:
             kw = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                      stderr=subprocess.PIPE, text=True, bufsize=1)
             if sys.platform == "win32":
                 kw["creationflags"] = subprocess.CREATE_NO_WINDOW
             self._proc = subprocess.Popen(
@@ -420,7 +420,9 @@ class STTProcess:
             line = self._proc.stdout.readline()
             msg  = json.loads(line)
             if "error" in msg:
+                err_out = self._proc.stderr.read()
                 print(f"[STT] Worker failed to load: {msg['error']}")
+                if err_out: print(f"[STT] stderr: {err_out[:500]}")
                 if self._status_cb: self._status_cb("⚠  STT LOAD FAILED", "err")
             else:
                 print("[STT] Subprocess worker ready")
@@ -791,6 +793,176 @@ class PromptBox(QTextEdit):
     def resizeEvent(self,e):
         super().resizeEvent(e); self._update_height()
 
+
+# ── Markdown → HTML converter ────────────────────────────────────────────────
+def md_to_html(text, cursor=False):
+    """
+    Convert a subset of Markdown to styled HTML for QTextBrowser.
+    Handles: fenced code blocks, inline code, headers (h1-h3),
+             bold, italic, bullet lists, numbered lists, horizontal rules.
+    Styled to match the JARVIS dark terminal aesthetic.
+    """
+    import html as _html
+
+    lines = text.split("\n")
+    out   = []
+    in_code_block = False
+    code_lang     = ""
+    code_buf      = []
+    in_ul         = False
+    in_ol         = False
+
+    def flush_list():
+        nonlocal in_ul, in_ol
+        if in_ul: out.append("</ul>"); in_ul = False
+        if in_ol: out.append("</ol>"); in_ol = False
+
+    def render_inline(t):
+        t = _html.escape(t)
+        # Bold+italic
+        t = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', t)
+        # Bold
+        t = re.sub(r'\*\*(.+?)\*\*', lambda m: f'<b style="color:{ACCENT}">{m.group(1)}</b>', t)
+        # Italic * or _
+        t = re.sub(r'(?<![*_])\*([^*]+)\*(?![*])', r'<i>\1</i>', t)
+        t = re.sub(r'(?<![*_])_([^_]+)_(?![_])',   r'<i>\1</i>', t)
+        # Inline code
+        t = re.sub(r'`([^`]+)`',
+            lambda m: f'<code style="background:#0a2030;color:{OK_COL};'
+                      f'padding:1px 5px;border-radius:3px;'
+                      f'font-family:Courier New;">{m.group(1)}</code>', t)
+        return t
+
+    for line in lines:
+        # ── Fenced code block ─────────────────────────────────────────────
+        if line.startswith("```"):
+            if not in_code_block:
+                flush_list()
+                code_lang = line[3:].strip()
+                in_code_block = True
+                code_buf = []
+            else:
+                in_code_block = False
+                body = _html.escape("\n".join(code_buf))
+                lang = (f'<span style="color:{TEXTMUT};font-size:8pt;">'
+                        f'{_html.escape(code_lang)}</span><br>') if code_lang else ""
+                out.append(
+                    f'<div style="background:#071520;border-left:2px solid {ACCDIM};'
+                    f'padding:8px 12px;margin:6px 0;border-radius:2px;">'
+                    f'{lang}'
+                    f'<pre style="margin:0;color:{OK_COL};font-family:Courier New;'
+                    f'font-size:9pt;white-space:pre-wrap;">{body}</pre></div>'
+                )
+            continue
+
+        if in_code_block:
+            code_buf.append(line)
+            continue
+
+        # ── Headers ───────────────────────────────────────────────────────
+        m = re.match(r'^(#{1,3})\s+(.+)', line)
+        if m:
+            flush_list()
+            level  = len(m.group(1))
+            sz     = {1: "13pt", 2: "11pt", 3: "10pt"}[level]
+            col    = ACCENT if level <= 2 else TEXT
+            out.append(
+                f'<p style="color:{col};font-size:{sz};font-weight:bold;'
+                f'margin:8px 0 4px 0;border-bottom:1px solid {ACCDIM};'
+                f'padding-bottom:2px;">{render_inline(m.group(2))}</p>'
+            )
+            continue
+
+        # ── Horizontal rule ───────────────────────────────────────────────
+        if re.match(r'^[-*_]{3,}\s*$', line):
+            flush_list()
+            out.append(f'<hr style="border:none;border-top:1px solid {ACCDIM};margin:8px 0;">')
+            continue
+
+        # ── Unordered list ────────────────────────────────────────────────
+        m = re.match(r'^(\s*)[-*+]\s+(.+)', line)
+        if m:
+            if in_ol: flush_list()
+            if not in_ul:
+                out.append('<ul style="margin:4px 0;padding-left:20px;">')
+                in_ul = True
+            out.append(f'<li style="color:{TEXT};margin:2px 0;">{render_inline(m.group(2))}</li>')
+            continue
+
+        # ── Ordered list ──────────────────────────────────────────────────
+        m = re.match(r'^\s*\d+\.\s+(.+)', line)
+        if m:
+            if in_ul: flush_list()
+            if not in_ol:
+                out.append('<ol style="margin:4px 0;padding-left:20px;">')
+                in_ol = True
+            out.append(f'<li style="color:{TEXT};margin:2px 0;">{render_inline(m.group(1))}</li>')
+            continue
+
+        # ── Regular paragraph ─────────────────────────────────────────────
+        flush_list()
+        if line.strip() == "":
+            out.append('<p style="margin:3px 0;"> </p>')
+        else:
+            out.append(f'<p style="margin:3px 0;color:{TEXT};">{render_inline(line)}</p>')
+
+    flush_list()
+
+    if cursor:
+        out.append(f'<span style="color:{ACCENT};">▌</span>')
+
+    return "".join(out)
+
+
+# ── Markdown bubble (AI responses) ────────────────────────────────────────────
+class MarkdownBubble(QTextBrowser):
+    """QTextBrowser that renders markdown as styled HTML matching JARVIS theme."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFont(make_font())
+        self.setOpenExternalLinks(False)
+        self.setStyleSheet(
+            f"QTextBrowser{{background:{AI_BG};color:{TEXT};border:none;padding:10px;"
+            f"selection-background-color:{ACCDIM};selection-color:{TEXT};}}"
+            f"QScrollBar:vertical{{width:0px;}}"
+        )
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.document().setDocumentMargin(0)
+        self._raw = ""
+        QTimer.singleShot(0, self._update_height)
+
+    def set_markdown(self, text, cursor=False):
+        """Render markdown as HTML. Call this instead of setText during streaming."""
+        self._raw = text
+        self.setHtml(md_to_html(text, cursor=cursor))
+        QTimer.singleShot(0, self._update_height)
+
+    def set_plain(self, text):
+        """Set plain text directly — used for throat-clearing animation."""
+        self._raw = ""
+        self.setPlainText(text)
+        QTimer.singleShot(0, self._update_height)
+
+    def get_plain(self):
+        return self._raw if self._raw else self.toPlainText()
+
+    def _update_height(self):
+        w = self.viewport().width()
+        if w < 10: w = WIN_W - 60
+        self.document().setTextWidth(w)
+        h = int(self.document().size().height()) + 24
+        self.setFixedHeight(max(40, h))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._update_height()
+
+
 # ── Message bubble ────────────────────────────────────────────────────────────
 class MessageBubble(QTextEdit):
     def __init__(self,text="",bg=AI_BG,fg=TEXT,italic=False,parent=None):
@@ -861,7 +1033,8 @@ class AIMessage(QWidget):
         self.think_block=None
         if show_think:
             self.think_block=ThinkBlock(); layout.addWidget(self.think_block)
-        self.resp=MessageBubble(text="▌"); layout.addWidget(self.resp)
+        self.resp=MarkdownBubble(); layout.addWidget(self.resp)
+        self.resp.set_plain("▌")
         copy_row=QWidget(); copy_row.setStyleSheet(f"background:{BG};")
         cr=QHBoxLayout(copy_row); cr.setContentsMargins(0,0,0,4)
         self.copy_btn=QPushButton("[ COPY ]"); self.copy_btn.setFont(make_font(size=8))
@@ -878,8 +1051,7 @@ class AIMessage(QWidget):
     def start_throat_clearing(self):
         """Show pulsing CLEARING THROAT animation while waiting for first TTS prebake."""
         self._throat_frame = 0
-        self.resp.setStyleSheet(f"color:{WARN};background:transparent;padding:4px 0;")
-        self.resp.setText(self._THROAT_FRAMES[0])
+        self.resp.set_plain(self._THROAT_FRAMES[0])
         self._throat_timer.start(220)
         # Play cough sound in background thread — no DLL conflict, sounddevice only
         def _play_cough():
@@ -901,24 +1073,23 @@ class AIMessage(QWidget):
 
     def _throat_step(self):
         self._throat_frame = (self._throat_frame + 1) % len(self._THROAT_FRAMES)
-        self.resp.setText(self._THROAT_FRAMES[self._throat_frame])
+        self.resp.set_plain(self._THROAT_FRAMES[self._throat_frame])
 
     def stop_throat_clearing(self):
         self._throat_timer.stop()
-        self.resp.setStyleSheet(f"color:{TEXT};background:transparent;padding:4px 0;")
 
-    def update_resp(self,text): self.resp.setText(text)
+    def update_resp(self, text): self.resp.set_markdown(text, cursor=True)
     def update_think(self,text):
         if self.think_block: self.think_block.append_think(text)
     def finalize(self,text,aborted):
         self._throat_timer.stop()
-        self.resp.setStyleSheet(f"color:{TEXT};background:transparent;padding:4px 0;")
-        self.resp.setText(text+("\n\n[ ABORTED ]" if aborted else ""))
+        body = text + ("\n\n[ ABORTED ]" if aborted else "")
+        self.resp.set_markdown(body, cursor=False)
         if self.think_block:
             if aborted: self.think_block.set_aborted()
             else: self.think_block.set_done()
     def _copy(self):
-        QApplication.clipboard().setText(self.resp.toPlainText())
+        QApplication.clipboard().setText(self.resp.get_plain())
         self.copy_btn.setText("[ COPIED ✓ ]")
         self.copy_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{OK_COL};border:none;padding:2px 6px;}}")
         QTimer.singleShot(1800,self._reset_copy)
@@ -1040,6 +1211,23 @@ class BootWidget(QWidget):
             # TTS failed — start without audio
             QTimer.singleShot(0, self._start_animation)
             return
+        # Play cough sound at start of matrix animation
+        def _play_cough():
+            try:
+                import sounddevice as sd
+                import numpy as np
+                import wave as _wave
+                cough_path = os.path.join(VOICE_DIR, "cough.wav")
+                if not os.path.exists(cough_path): return
+                with _wave.open(cough_path, 'rb') as wf:
+                    sr  = wf.getframerate()
+                    ch  = wf.getnchannels()
+                    raw = wf.readframes(wf.getnframes())
+                pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, ch)
+                sd.play(pcm, samplerate=sr, blocking=True)
+            except Exception as e:
+                print(f"[COUGH] {e}")
+        threading.Thread(target=_play_cough, daemon=True).start()
         # Request prebake for each spoken line
         for idx in self._spoken_indices:
             txt, _ = self.LINES[idx]
@@ -1616,7 +1804,7 @@ class MainWindow(QMainWindow):
             msg.start_throat_clearing()
             _tts.prebake(-1, GREETING_TEXT, self.tts_voice)
         else:
-            msg.resp.setText("▌")
+            msg.resp.set_plain("▌")
             self._sig_greet_ready.emit()
 
     def _on_greet_ready(self):
@@ -1634,11 +1822,11 @@ class MainWindow(QMainWindow):
     def _greet_step(self):
         if self._greet_idx <= len(self._greet_text):
             cur = "▌" if self._greet_idx < len(self._greet_text) else ""
-            self._greet_msg.resp.setText(self._greet_text[:self._greet_idx] + cur)
+            self._greet_msg.resp.set_plain(self._greet_text[:self._greet_idx] + cur)
             self._greet_idx += 1; self._scroll_bottom()
         else:
             self._greet_timer.stop()
-            self._greet_msg.resp.setText(self._greet_text)
+            self._greet_msg.resp.set_plain(self._greet_text)
             self._unlock_input()
 
     # ── Feed ──────────────────────────────────────────────────────────────────
@@ -1692,7 +1880,7 @@ class MainWindow(QMainWindow):
                         content="\n".join(c["text"] for c in content if c.get("type")=="text")
                     self._add_widget(UserMessage(str(content)))
                 elif role=="assistant":
-                    msg=AIMessage(show_think=False); msg.resp.setText(str(content))
+                    msg=AIMessage(show_think=False); msg.resp.set_markdown(str(content))
                     self._add_widget(msg)
         self._scroll_bottom()
 
@@ -1953,7 +2141,7 @@ class MainWindow(QMainWindow):
             self._chunk_buffer = text  # StreamWorker sends full accumulated text each chunk
             # Don't update display — throat clearing animation is showing
         else:
-            self._current_ai.update_resp(text + " ▌")
+            self._current_ai.update_resp(text)
             self._scroll_bottom()
 
     def _on_unleash(self, buffered_text):
@@ -1962,7 +2150,7 @@ class MainWindow(QMainWindow):
         self._tts_unleashed = True
         self._current_ai.stop_throat_clearing()
         if buffered_text:
-            self._current_ai.update_resp(buffered_text + " ▌")
+            self._current_ai.update_resp(buffered_text)
         self._scroll_bottom()
         # Play the prebaked first sentence
         if _tts: _tts.play_prebaked(100)
