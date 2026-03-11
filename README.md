@@ -2,8 +2,10 @@
 
 **Just A Rather Very Intelligent System**
 
-A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Supports local LLMs via Ollama, cloud models via the Anthropic API, voice synthesis via Piper TTS, and speech-to-text via faster-whisper all in a sleek dark terminal UI with a cinematic boot sequence.
+A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Supports local LLMs via Ollama, cloud models via the Anthropic API, voice synthesis via Kokoro-ONNX (GPU-accelerated), and speech-to-text via faster-whisper — all in a sleek dark terminal UI with a cinematic boot sequence.
+
 ![AI view](assets/view.png)
+
 ---
 
 ## Table of Contents
@@ -16,10 +18,9 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
   - [2. Python Packages](#2-python-packages)
   - [3. Ollama (Local LLM)](#3-ollama-local-llm)
   - [4. Ollama Models](#4-ollama-models)
-  - [5. Piper TTS Voices](#5-piper-tts-voices)
+  - [5. Kokoro TTS Voices](#5-kokoro-tts-voices)
   - [6. STT Model (Whisper)](#6-stt-model-whisper)
   - [7. Anthropic API Key (Optional)](#7-anthropic-api-key-optional)
-
 - [Configuration](#configuration)
 - [Running JARVIS](#running-jarvis)
 - [Auto-Launch on Login (Windows Task Scheduler)](#auto-launch-on-login-windows-task-scheduler)
@@ -42,20 +43,23 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
 
 ## Features
 
-- **Cinematic boot sequence** with matrix static loading animation and synchronized TTS
+- **Cinematic boot sequence** — matrix static animation plays while TTS pre-synthesizes all boot lines. Once ready, typewriter animation and voice start simultaneously, perfectly in sync
+- **"Clearing Throat" response animation** — when TTS is enabled, JARVIS shows a pulsing `CLEARING THROAT ●○○` animation (with a cough sound effect) while pre-synthesizing the first sentence. Text and voice then unleash together at the same moment
 - **Dual provider support** — run models locally via Ollama or use Anthropic cloud models (Claude Haiku, Sonnet, Opus)
-- **Fully local option** — works 100% offline with Ollama + Piper TTS + Whisper STT
-- **Text-to-speech** via Piper TTS with multiple British English voices, perfectly synced to typewriter animation
+- **Fully local option** — works 100% offline with Ollama + Kokoro TTS + Whisper STT
+- **GPU-accelerated TTS** via Kokoro-ONNX — near-instant synthesis on NVIDIA GPUs, runs in a separate subprocess to avoid DLL conflicts with Qt
+- **Pipelined TTS playback** — while sentence N is playing, sentence N+1 is already being synthesized, eliminating gaps between sentences
 - **Speech-to-text** via faster-whisper, running in a separate process to avoid DLL conflicts
 - **File attachments** — send images (PNG, JPG, WEBP, GIF), PDFs, and plain text/code files
 - **Persistent memory** — JARVIS remembers facts about you across conversations
 - **Conversation history** — all conversations saved locally and accessible from the history panel
 - **Think mode** — enables chain-of-thought reasoning (supported by Ollama qwen models only)
+- **TTS toggle locked during boot/greeting/response** — prevents accidental toggling while audio is in progress
 - **Input locking** — input is disabled during boot and greeting animations
-- **ESC to stop** — press ESC at any time to instantly stop TTS playback
+- **ESC to stop** — press ESC at any time to instantly stop TTS playback and clear the queue
 - **Auto-scroll** toggle, always-on-top toggle, stay-on-top window mode
 - **PC control** — launch apps, open websites, check system stats, control power settings, open files and folders — all by just asking
-- **Fully offline-capable** — no internet required if using local models and voices
+- **API key file** — Anthropic API key stored in `jarvis_data/api_key.txt`, never hardcoded in source
 
 ---
 
@@ -65,13 +69,13 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
 Jarvis/
 ├── jarvis.pyw              # Main application (run with pythonw, no console)
 ├── jarvis_stt_worker.py    # STT subprocess worker (do not run directly)
+├── jarvis_tts_worker.py    # TTS subprocess worker (do not run directly)
 ├── start_jarvis.vbs        # Silent launcher script for Task Scheduler
-├── jarvis_voices/          # Piper TTS voice files (need to download not found in repo)
-│   ├── en_GB-northern_english_male-medium.onnx
-│   ├── en_GB-northern_english_male-medium.onnx.json
-│   ├── en_GB-semaine-medium.onnx
-│   └── en_GB-semaine-medium.onnx.json
-├── jarvis_stt/             # Whisper STT model files (need to download not found in repo)
+├── jarvis_voices/          # Kokoro TTS model and voice files (download separately)
+│   ├── kokoro-v1.0.fp16-gpu.onnx   # Kokoro model (GPU, recommended)
+│   ├── voices-v1.0.bin             # Kokoro voice pack
+│   └── cough.wav                   # Cough sound effect for throat-clearing animation
+├── jarvis_stt/             # Whisper STT model files (download separately)
 │   ├── config.json
 │   ├── model.bin
 │   ├── tokenizer.json
@@ -79,6 +83,7 @@ Jarvis/
 ├── jarvis_data/            # Auto-created at runtime
 │   ├── settings.json       # Saved settings
 │   ├── memory.json         # Persistent memory facts
+│   ├── api_key.txt         # Your Anthropic API key (create this manually)
 │   └── conversations/      # Saved conversation JSON files
 └── README.md
 ```
@@ -87,7 +92,7 @@ Jarvis/
 
 ## Requirements
 
-i am personaly running with on windoows 11 with 16 gb ddr4 3200Mhz and an RTX 3050 6Gb (labtop) i am getting 25tok/sec for the 4b and 15tok/sec for the 9b (prety good)
+Personally running on Windows 11 with 16 GB DDR4 3200MHz and an RTX 3050 6GB (laptop). Getting 25 tok/sec for the 4b and 15 tok/sec for the 9b. TTS synthesis with the GPU model is near-instant.
 
 ---
 
@@ -95,7 +100,7 @@ i am personaly running with on windoows 11 with 16 gb ddr4 3200Mhz and an RTX 30
 
 ### 1. Python
 
-Download and install Python 3.10 (not sure if later versions work) from [python.org](https://www.python.org/downloads/).
+Download and install Python 3.11 from [python.org](https://www.python.org/downloads/).
 
 During installation, make sure to check **"Add Python to PATH"**.
 
@@ -111,8 +116,13 @@ python --version
 Open a terminal (Command Prompt or PowerShell) and run:
 
 ```bash
-pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard numpy psutil
+pip install PyQt6 faster-whisper pyaudio kokoro-onnx onnxruntime-gpu sounddevice keyboard numpy psutil
 ```
+
+> **Note:** `onnxruntime-gpu` is a large download (~207 MB). If it times out, use:
+> ```bash
+> pip install onnxruntime-gpu --timeout 300
+> ```
 
 **What each package does:**
 
@@ -121,7 +131,8 @@ pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard numpy ps
 | `PyQt6` | GUI framework — the entire window and UI |
 | `faster-whisper` | Speech-to-text transcription (Whisper model) |
 | `pyaudio` | Microphone audio capture |
-| `piper-tts` | Text-to-speech voice synthesis |
+| `kokoro-onnx` | Text-to-speech voice synthesis (Kokoro model) |
+| `onnxruntime-gpu` | GPU-accelerated ONNX runtime for Kokoro TTS |
 | `sounddevice` | Zero-latency audio playback |
 | `keyboard` | Global hotkey listener (Right Alt for STT) |
 | `numpy` | Audio buffer manipulation |
@@ -169,41 +180,61 @@ PROVIDERS = {
 }
 ```
 
-You can browse all available models at [ollama.com/library](https://ollama.com/library) or any other open source llm.
+You can browse all available models at [ollama.com/library](https://ollama.com/library).
 
 ---
 
-### 5. Piper TTS Voices
+### 5. Kokoro TTS Voices
 
-JARVIS uses [Piper TTS](https://github.com/rhasspy/piper) for voice synthesis. The voice files are **not included in the repo** due to their size (~100–200 MB each) and must be downloaded manually.
+JARVIS uses [Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx) for voice synthesis. The model files are **not included in the repo** and must be downloaded manually.
 
 #### Step 1 — Create the voices folder
 
 Inside your Jarvis project folder, create a folder called `jarvis_voices/` if it doesn't already exist.
 
-#### Step 2 — Download the voice files
+#### Step 2 — Download the model files
 
-Each voice requires **two files**: a `.onnx` model file and a `.onnx.json` config file. Both must be placed in `jarvis_voices/`.
+Download both files and place them in `jarvis_voices/`:
 
-**NORTHERN voice** (`en_GB-northern_english_male-medium`):
-- Download [en_GB-northern_english_male-medium.onnx](https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/northern_english_male/medium/en_GB-northern_english_male-medium.onnx)
-- Download [en_GB-northern_english_male-medium.onnx.json](https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/northern_english_male/medium/en_GB-northern_english_male-medium.onnx.json)
+| File | Download |
+|---|---|
+| `kokoro-v1.0.fp16-gpu.onnx` | [GitHub Releases](https://github.com/thewh1teagle/kokoro-onnx/releases) |
+| `voices-v1.0.bin` | [GitHub Releases](https://github.com/thewh1teagle/kokoro-onnx/releases) |
 
-**SEMAINE voice** (`en_GB-semaine-medium`):
-- Download [en_GB-semaine-medium.onnx](https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx)
-- Download [en_GB-semaine-medium.onnx.json](https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx.json)
+> **GPU vs CPU model:** `fp16-gpu.onnx` requires an NVIDIA GPU with CUDA. If you don't have one, download `kokoro-v1.0.int8.onnx` instead and update `MODEL_FILE` in `TTSEngine` inside `jarvis.pyw`. The GPU model synthesizes audio near-instantly; the CPU model takes 2–3 seconds per sentence.
 
-After downloading, your `jarvis_voices/` folder should look like this:
+#### Step 3 — (already in repo) Add a cough sound
+
+Download any short cough `.wav` file (e.g. from [freesound.org](https://freesound.org) — filter by CC0 license) and place it in `jarvis_voices/` as `cough.wav`. JARVIS will play it automatically when the throat-clearing animation starts.
+
+After setup, your `jarvis_voices/` folder should look like this:
 
 ```
 jarvis_voices/
-├── en_GB-northern_english_male-medium.onnx
-├── en_GB-northern_english_male-medium.onnx.json
-├── en_GB-semaine-medium.onnx
-└── en_GB-semaine-medium.onnx.json
+├── kokoro-v1.0.fp16-gpu.onnx
+├── voices-v1.0.bin
+└── cough.wav          (optional)
 ```
 
-> You can browse all available Piper voices at [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/en). To add a new voice, download its `.onnx` and `.onnx.json` files, drop them in `jarvis_voices/`, and add an entry to the `VOICES` dictionary in `jarvis.pyw`.
+#### Available voices
+
+The two built-in voices are:
+
+| Key | Voice ID | Style |
+|---|---|---|
+| `MALE` | `bm_george` | British male |
+| `FEMALE` | `af_heart` | American female |
+
+To add more voices, browse the [Kokoro voice list](https://github.com/thewh1teagle/kokoro-onnx) and add entries to the `VOICES` dictionary in `jarvis.pyw`:
+
+```python
+VOICES = {
+    "MALE":   {"id": "bm_george"},
+    "FEMALE": {"id": "af_heart"},
+    # Add your own:
+    "BELLA":  {"id": "af_bella"},
+}
+```
 
 ---
 
@@ -227,7 +258,7 @@ JARVIS uses the `base` Whisper model by default. Download all of the following f
 | `vocabulary.txt` | [Download](https://huggingface.co/Systran/faster-whisper-base/resolve/main/vocabulary.txt) |
 | `preprocessor_config.json` | [Download](https://huggingface.co/Systran/faster-whisper-base/resolve/main/preprocessor_config.json) |
 
-Or download them all at once by visiting the [faster-whisper-base model page](https://huggingface.co/Systran/faster-whisper-base) on Hugging Face and clicking the **"Files and versions"** tab, then downloading each file.
+Or visit the [faster-whisper-base model page](https://huggingface.co/Systran/faster-whisper-base) on Hugging Face → **"Files and versions"** tab → download each file.
 
 After downloading, your `jarvis_stt/` folder should look like this:
 
@@ -256,8 +287,6 @@ STT_MODEL_DIR = r"C:\Users\YourName\Desktop\Jarvis\jarvis_stt"
 
 #### Available model sizes
 
-You can use a larger Whisper model for better accuracy. Just download the corresponding files from Hugging Face and update `jarvis_stt_worker.py` to point to the new model.
-
 | Model | Size | Speed | Accuracy | Hugging Face Link |
 |---|---|---|---|---|
 | `base` | ~150 MB | Fast | Good | [faster-whisper-base](https://huggingface.co/Systran/faster-whisper-base) |
@@ -273,14 +302,13 @@ If you want to use Claude cloud models (Haiku, Sonnet, Opus), you need an Anthro
 
 1. Sign up at [console.anthropic.com](https://console.anthropic.com/)
 2. Go to **API Keys** and create a new key
-3. Open `jarvis.pyw` in a text editor and find this line:
-```python
-ANTHROPIC_API_KEY = "YOUR_API_KEY_HERE"
+3. Create a file called `api_key.txt` inside your `jarvis_data/` folder
+4. Paste your key into the file and save — nothing else, just the key:
 ```
-4. Replace `YOUR_API_KEY_HERE` with your actual key:
-```python
-ANTHROPIC_API_KEY = "sk-ant-api03-..."
+sk-ant-api03-...
 ```
+
+> The key is never hardcoded in the source. `jarvis_data/` is ignored by git so your key stays private.
 
 > **Pricing:** Anthropic charges per token. Haiku is the cheapest, Opus is the most expensive. Check [anthropic.com/pricing](https://www.anthropic.com/pricing) for current rates. You do NOT need an API key to use local Ollama models.
 
@@ -303,7 +331,7 @@ JARVIS_SYSTEM = "You are J.A.R.V.I.S ..."
 # Greeting shown and spoken on startup and new chat
 GREETING_TEXT = "Hello, sir.\n\n..."
 
-# Boot animation lines (edit freely — TTS timing recalculates automatically)
+# Boot animation lines (edit freely — any line starting with > is spoken by TTS)
 LINES = [
     ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈", ACCENT),
     ("  J.A.R.V.I.S  v4.1  //  STARK INDUSTRIES", TEXT),
@@ -420,6 +448,8 @@ Click **OK**. Test it by locking your PC with `Win + L` and then typing your pas
 
 Type your message in the green input box at the bottom and press **Enter** to send. Press **Shift + Enter** for a new line without sending.
 
+**Global hotkey:** Press `Ctrl + Alt + J` from anywhere on your PC to instantly show or hide the JARVIS window — no need to click the taskbar you can also make a shortcut for the script and use this hot key to lunch the app if u closed it for some reason.
+
 ---
 
 ### Switching Models
@@ -434,17 +464,19 @@ Use the **model dropdown** at the top of the window to switch between:
 | SONNET | Anthropic (cloud) | claude-sonnet-4-5 |
 | OPUS | Anthropic (cloud) | claude-opus-4-5 |
 
-> LOCAL models require Ollama to be running and the model to be pulled. HAIKU/SONNET/OPUS require a valid Anthropic API key.
+> LOCAL models require Ollama to be running and the model to be pulled. HAIKU/SONNET/OPUS require a valid Anthropic API key in `jarvis_data/api_key.txt`.
 
 ---
 
 ### Voice (TTS)
 
 - TTS is controlled via the **settings gear (⚙)** in the top-right corner
-- Toggle TTS on/off from the settings menu
-- Switch between voices (NORTHERN, SEMAINE) from the settings menu
-- Press **ESC** at any time to immediately stop TTS playback mid-sentence
-- The boot sequence and greeting are fully synchronized — text types at the same speed as the voice speaks
+- Toggle TTS on/off and switch voices (MALE/FEMALE) from the settings menu
+- **TTS and voice cannot be toggled during boot, greeting, or while a response is playing** — changes take effect after the current audio finishes
+- Press **ESC** at any time to immediately stop TTS playback and clear the entire queue
+- **Boot sequence:** Matrix animation plays while all boot lines are pre-synthesized. Once ready, typewriter and voice start simultaneously for each line
+- **Greeting:** Blinking cursor shows while greeting audio is pre-synthesized. Text and voice then start together
+- **Responses:** `CLEARING THROAT ●○○` animation (with cough sound) shows while the first sentence is being synthesized. The moment it's ready, text floods in and voice starts at the same time. Subsequent sentences follow at their own pace
 
 ---
 
@@ -467,15 +499,14 @@ Click the **[ + ]** button to attach files to your message. Supported types:
 | PDFs | `.pdf` |
 | Text / Code | `.txt`, `.py`, `.js`, `.ts`, `.html`, `.css`, `.md`, `.json`, `.csv`, `.xml`, `.yaml`, `.yml`, `.sh`, `.bat`, `.c`, `.cpp`, `.h`, `.java`, `.rs`, `.go`, `.rb`, `.php` |
 
-
 ---
 
 ### Memory
 
 JARVIS has a persistent memory system. You can store facts that will be included in every conversation.
 
-- Click **[ MEM ]** in the top bar to open and view memory 
-- Add facts like `"User's name is Hadi"`, `"User studies Computer Engineering"`, using "/remember" comand before the prompt.
+- Click **[ MEM ]** in the top bar to open and view memory
+- Add facts using the `/remember` command before your message, e.g.: `/remember My name is Hadi`
 - Memory is saved to `jarvis_data/memory.json` and persists between sessions
 - Memory is automatically included in every message sent to the model
 
@@ -493,14 +524,14 @@ JARVIS has a persistent memory system. You can store facts that will be included
 Think mode enables extended chain-of-thought reasoning — the model thinks through problems step by step before responding. The thinking process is shown in a dimmed block above the final answer.
 
 - Toggle think mode via the **settings gear (⚙)** menu
-- Supported by: Ollama qwen3.5 models
+- Supported by: Ollama qwen3.5 models only
 
 ---
 
 ### Stopping a Response
 
 - Click **[ ABORT ]** to stop the current AI response mid-stream
-- Press **ESC** to stop TTS playback immediately
+- Press **ESC** to stop TTS playback immediately and clear all queued sentences
 
 ---
 
@@ -546,7 +577,7 @@ GREETING_TEXT = (
 ```
 
 **Change the boot animation lines:**
-Edit the `LINES` list inside the `BootWidget` class. Any line starting with `>` will be spoken by TTS automatically. Timing recalculates at runtime.
+Edit the `LINES` list inside the `BootWidget` class. Any line starting with `>` will be pre-synthesized and spoken in sync with the typewriter. Non-`>` lines type at default speed silently.
 
 **Change the AI personality:**
 ```python
@@ -572,6 +603,13 @@ WARN   = "#ffaa00"   # Orange warnings
 ERR    = "#ff4444"   # Red errors
 ```
 
+**Switch TTS model (CPU vs GPU):**
+```python
+# In TTSEngine class inside jarvis.pyw:
+MODEL_FILE = "kokoro-v1.0.fp16-gpu.onnx"   # GPU (recommended, NVIDIA only)
+MODEL_FILE = "kokoro-v1.0.int8.onnx"        # CPU fallback
+```
+
 ---
 
 **Add or remove apps from the launcher:**
@@ -591,19 +629,14 @@ APPS = {
 
 To find a Steam game's ID, right-click it in your Steam library → **Properties** → the number in the URL is the game ID.
 
-For Epic Games, right-click the game shortcut → **Properties** → copy the full Target URI.
-
 You can add as many aliases as you want for the same app:
 ```python
 "vscode":  r"C:\...\Code.exe",
-"code":    r"C:\...\Code.exe",   # same path, different trigger word
+"code":    r"C:\...\Code.exe",
 "editor":  r"C:\...\Code.exe",
 ```
 
-After adding a new app, also update the app list in `JARVIS_SYSTEM` so the model knows about it:
-```python
-"[RUN: appname] - launch an app. Apps: zen, spotify, ..., yournewapp\n"
-```
+After adding a new app, also update the app list in `JARVIS_SYSTEM` so the model knows about it.
 
 ---
 
@@ -636,36 +669,42 @@ ALLOWED_DIRS = [
 - Open a terminal and run `ollama serve` manually to see error output
 - Make sure you have pulled the model: `ollama pull qwen3.5:4b`
 
-**No TTS voice / "VOICE FILES MISSING"**
-- Check that both `.onnx` and `.onnx.json` files are in the `jarvis_voices/` folder
-- Make sure the filenames exactly match the `id` values in the `VOICES` dictionary
+**TTS not working / "TTS FAILED" in status bar**
+- Check that `kokoro-v1.0.fp16-gpu.onnx` and `voices-v1.0.bin` are in `jarvis_voices/`
+- Make sure `kokoro-onnx` and `onnxruntime-gpu` are installed
+- If you don't have an NVIDIA GPU, switch to the CPU model (`kokoro-v1.0.int8.onnx`) and install `onnxruntime` instead of `onnxruntime-gpu`
+- Check the console for `[TTS] Worker failed:` errors
+
+**TTS is slow / long pause before voice starts**
+- Make sure you're using the GPU model (`fp16-gpu.onnx`) and `onnxruntime-gpu`
+- Verify your GPU is being used: run `nvidia-smi` and check GPU memory usage increases when JARVIS speaks
+- If VRAM is full (running a large LLM), the TTS worker may fall back to CPU automatically
+
+**No cough sound**
+- Make sure `cough.wav` is in `jarvis_voices/`
+- The file must be a valid WAV file (not MP3 renamed to .wav)
+
+**Anthropic API errors**
+- Make sure `jarvis_data/api_key.txt` exists and contains only your API key with no extra spaces or newlines
+- Make sure your Anthropic account has credits — check [console.anthropic.com](https://console.anthropic.com/)
 
 **STT not working / microphone not detected**
 - Make sure `pyaudio` is installed correctly
 - Check your microphone is set as the default recording device in Windows Sound settings
-- The STT model downloads on first use — wait for it to finish
 
 **pyaudio install fails on Windows**
 - Download the prebuilt wheel from [https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio)
 - Install it: `pip install PyAudio‑0.2.14‑cp311‑cp311‑win_amd64.whl`
 
-**Anthropic API errors**
-- Double-check your API key in `jarvis.pyw`
-- Make sure your Anthropic account has credits — check [console.anthropic.com](https://console.anthropic.com/)
-
 **App won't launch / "App not found"**
 - Check the path in the `APPS` dictionary exactly matches the `.exe` location on your PC
-- Right-click the app shortcut → Properties → copy the exact Target path
-- Make sure the app name you're saying matches a key in the `APPS` dictionary
-- For Steam games use `steam://rungameid/GAME_ID` — find the ID in Steam → game Properties → the number in the URL
+- For Steam games use `steam://rungameid/GAME_ID`
 - For Epic games right-click the desktop shortcut → Properties → copy the full Target URI
-
-**"psutil not installed" when checking system stats**
-- Run: `pip install psutil`
 
 **Task Scheduler launches JARVIS at boot, not after login**
 - Make sure the trigger is set to **"On workstation unlock"**
 
+---
 
 ## License
 
