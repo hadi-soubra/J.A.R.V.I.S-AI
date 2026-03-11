@@ -10,9 +10,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QScrollArea, QComboBox, QSizePolicy,
-    QGraphicsOpacityEffect, QFileDialog, QDialog, QMenu,
+    QFileDialog, QDialog, QMenu,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint, QMetaObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QFont, QCursor, QAction, QIcon
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -1339,7 +1339,6 @@ class MainWindow(QMainWindow):
         self._drag_pos=None
 
         self.model_combo.setCurrentText(self.provider)
-        self._update_settings_menu()
         self._start_hotkey_listener()
 
     def _lock_input(self):
@@ -1381,41 +1380,16 @@ class MainWindow(QMainWindow):
     # ── Build UI ──────────────────────────────────────────────────────────────
     def _build_ui(self):
         root=QWidget(); root.setObjectName("root")
-        root.setStyleSheet(f"#root{{background:{BG};}}")
+        root.setStyleSheet(f"#root{{background:{BG};opacity:0.9;}}")
         self.setCentralWidget(root)
-        eff=QGraphicsOpacityEffect(root); eff.setOpacity(0.9); root.setGraphicsEffect(eff)
         main=QVBoxLayout(root); main.setContentsMargins(0,0,0,0); main.setSpacing(0)
 
         # ── Title bar
         tb=QWidget(); tb.setFixedHeight(44); tb.setStyleSheet(f"background:{TITLEBAR};")
         tbl=QHBoxLayout(tb); tbl.setContentsMargins(14,0,4,0); tbl.setSpacing(0)
         title=QLabel("J.A.R.V.I.S"); title.setFont(make_font(bold=True,size=12))
-        title.setStyleSheet(f"color:{ACCENT};background:transparent;"); tbl.addWidget(title)
-        tbl.addStretch()
-        for text,tip,cb,hover in [
-            ("[ MEM ]","Memory",self._show_memory,CLAUDE_COL),
-            ("[ HIST ]","History",self._show_history,ACCENT),
-            ("[ ⬆ ]","Stay on top",self._toggle_top,ACCENT),
-        ]:
-            b=QPushButton(text); b.setFont(make_font(bold=True,size=8))
-            b.setFixedHeight(44); b.setToolTip(tip)
-            b.setStyleSheet(f"QPushButton{{background:transparent;color:{TEXTMUT};border:none;padding:0 8px;}}"
-                            f"QPushButton:hover{{color:{hover};}}")
-            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            b.clicked.connect(cb)
-            if tip=="Stay on top": self.top_btn=b
-        tbl.addWidget(self.top_btn) if hasattr(self,'top_btn') else None
-        # rebuild properly
-        tbl2=QHBoxLayout(); tbl2.setContentsMargins(14,0,4,0); tbl2.setSpacing(0)
-        title2=QLabel("J.A.R.V.I.S"); title2.setFont(make_font(bold=True,size=12))
-        title2.setStyleSheet(f"color:{ACCENT};background:transparent;")
-
-        # Redo titlebar cleanly
-        for i in reversed(range(tbl.count())):
-            item=tbl.takeAt(i)
-            if item.widget(): item.widget().setParent(None)
-
-        tbl.addWidget(title2); tbl.addStretch()
+        title.setStyleSheet(f"color:{ACCENT};background:transparent;")
+        tbl.addWidget(title); tbl.addStretch()
         for text,tip,cb,hover in [
             ("[ MEM ]","Memory",self._show_memory,CLAUDE_COL),
             ("[ HIST ]","History",self._show_history,ACCENT),
@@ -1426,8 +1400,6 @@ class MainWindow(QMainWindow):
                             f"QPushButton:hover{{color:{hover};}}")
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             b.clicked.connect(cb); tbl.addWidget(b)
-
-
         for text,tip,slot,hover in [("[ — ]","Minimize",self.showMinimized,ACCDIM),
                                      ("[ × ]","Close",self.close,"#4a1010")]:
             b=QPushButton(text); b.setFont(make_font(bold=True,size=9))
@@ -1547,9 +1519,6 @@ class MainWindow(QMainWindow):
         ial.addWidget(br); main.addWidget(ia)
 
     # ── Settings menu ─────────────────────────────────────────────────────────
-    def _update_settings_menu(self):
-        pass  # menu is built fresh each time it's shown
-
     def _show_settings_menu(self):
         menu=QMenu(self); menu.setStyleSheet(MENU_SS)
         is_claude=PROVIDERS[self.provider]["type"]=="anthropic"
