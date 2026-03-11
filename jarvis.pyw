@@ -1,9 +1,9 @@
 """
 J.A.R.V.I.S Interface — PyQt6
-pip install PyQt6 faster-whisper pyaudio piper-tts sounddevice keyboard
+pip install PyQt6 faster-whisper pyaudio kokoro-onnx sounddevice keyboard numpy
 """
 
-import sys, os, json, time, socket, subprocess, threading, base64, datetime, uuid, re, queue
+import sys, os, json, time, socket, subprocess, threading, base64, datetime, uuid, re
 import urllib.request, urllib.error, urllib.parse, io, wave, tempfile, webbrowser
 
 from PyQt6.QtWidgets import (
@@ -31,12 +31,17 @@ OLLAMA_HOST       = "127.0.0.1"
 OLLAMA_PORT       = 11434
 OLLAMA_URL        = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
 WIN_W, WIN_H      = 400, 780
-ANTHROPIC_API_KEY = "YOUR_API_KEY_HERE"
+def _load_api_key():
+    key_file = os.path.join(DATA_DIR, "api_key.txt")
+    if os.path.exists(key_file):
+        return open(key_file, encoding="utf-8").read().strip()
+    return "YOUR_API_KEY_HERE"
+ANTHROPIC_API_KEY = _load_api_key()
 MAX_HISTORY       = 40
 
 VOICES = {
-    "NORTHERN": {"id": "en_GB-northern_english_male-medium"},
-    "SEMAINE":  {"id": "en_GB-semaine-medium"},
+    "MALE":   {"id": "bm_george"},
+    "FEMALE": {"id": "af_heart"},
 }
 
 PROVIDERS = {
@@ -269,199 +274,116 @@ def stream_anthropic(model,messages,system_text,api_key):
                     try: yield json.loads(d)
                     except Exception: pass
 
-# ── TTS Engine (piper-tts) ──────────────────────────────────────────────────
+# ── TTS Worker script path ────────────────────────────────────────────────────
+TTS_WORKER_SCRIPT = os.path.join(APP_DIR, "jarvis_tts_worker.py")
+
+# ── TTS Engine (kokoro-onnx via subprocess) ───────────────────────────────────
 class TTSEngine:
     """
-    Piper TTS engine running on a dedicated background thread.
-    - Voices are loaded once and cached in self._voices.
-    - speak() / play_pcm() are thread-safe — they just enqueue work.
-    - synthesize_to_pcm() is blocking and used for pre-baking audio before playback.
-    - stop() calls sd.stop() to kill sounddevice playback immediately.
-    - _synth_lock serialises all voice.synthesize() calls (PiperVoice is not thread-safe).
+    Kokoro-onnx TTS engine running in a separate subprocess.
+
+    Modes:
+      prebake(id, text, voice) — synthesize + hold, fires prebake_cb(id, duration_ms)
+      play_prebaked(id)        — play a prebaked item
+      speak(text, voice)       — synthesize then play (responses)
+      stop()                   — stop everything immediately
     """
-    def __init__(self,status_cb=None):
-        self._queue    = queue.Queue()
-        self._stop_evt = threading.Event()
-        self._status_cb= status_cb
-        self._voice    = "NORTHERN"
-        self._voices   = {}
-        self._lock     = threading.Lock()
-        self._synth_lock = threading.Lock()  # serialises all voice.synthesize() calls
-        self._thread   = threading.Thread(target=self._worker,daemon=True)
-        self._thread.start()
-        threading.Thread(target=self._preload,daemon=True).start()
+    MODEL_FILE  = "kokoro-v1.0.fp16-gpu.onnx"
+    VOICES_FILE = "voices-v1.0.bin"
 
-    def _set_status(self,msg,level="warn"):
-        if self._status_cb: self._status_cb(msg,level)
+    def __init__(self, status_cb=None, prebake_cb=None, done_cb=None):
+        self._proc        = None
+        self._ready       = threading.Event()
+        self._status_cb   = status_cb
+        self._prebake_cb  = prebake_cb   # (id, duration_ms) when prebake finishes
+        self._done_cb     = done_cb      # (id) when playback finishes
+        self._voice       = "MALE"
+        self._write_lock  = threading.Lock()
+        threading.Thread(target=self._start, daemon=True).start()
 
-    def _preload(self):
-        self._load_voice("NORTHERN")
+    def _set_status(self, msg, level="warn"):
+        if self._status_cb: self._status_cb(msg, level)
 
-    def _load_voice(self,name):
-        with self._lock:
-            if name in self._voices: return self._voices[name]
+    def _start(self):
         try:
-            from piper.voice import PiperVoice
-            voice_id = VOICES[name]["id"]
-            onnx_path= os.path.join(VOICE_DIR,f"{voice_id}.onnx")
-            json_path= os.path.join(VOICE_DIR,f"{voice_id}.onnx.json")
-            if not os.path.exists(onnx_path) or not os.path.exists(json_path):
-                print(f"[TTS] Voice files not found for {name} in {VOICE_DIR}")
-                self._set_status("⚠  VOICE FILES MISSING","err")
-                return None
-            self._set_status(f"◈  LOADING {name} VOICE…","warn")
-            voice = PiperVoice.load(onnx_path,config_path=json_path,use_cuda=False)
-            with self._lock: self._voices[name]=voice
-            self._set_status("◈  TTS READY","ok")
-            print(f"[TTS] Voice {name} ready")
-            return voice
+            model_path  = os.path.join(VOICE_DIR, self.MODEL_FILE)
+            voices_path = os.path.join(VOICE_DIR, self.VOICES_FILE)
+            kw = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            if sys.platform == "win32":
+                kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            self._set_status("◈  LOADING KOKORO…", "warn")
+            self._proc = subprocess.Popen(
+                [sys.executable, TTS_WORKER_SCRIPT, model_path, voices_path], **kw)
+            line = self._proc.stdout.readline()
+            msg  = json.loads(line)
+            if msg.get("status") == "ready":
+                self._set_status("◈  TTS READY", "ok")
+                print("[TTS] Kokoro worker ready")
+                self._ready.set()
+                threading.Thread(target=self._reader, daemon=True).start()
+            else:
+                print(f"[TTS] Worker failed: {msg.get('message','')}")
+                self._set_status("⚠  TTS FAILED", "err")
+                self._ready.set()
         except Exception as e:
-            print(f"[TTS] Failed to load voice {name}: {e}")
-            self._set_status("⚠  TTS FAILED","err")
-            return None
+            print(f"[TTS] Failed to start worker: {e}")
+            self._set_status("⚠  TTS FAILED", "err")
+            self._ready.set()
 
-    def _play_pcm_direct(self, wav_bytes):
-        """Play wav bytes via sounddevice — no external process, zero startup latency."""
-        try:
-            import sounddevice as sd
-            import numpy as np
-            buf = io.BytesIO(wav_bytes)
-            with wave.open(buf, 'rb') as wf:
-                sr = wf.getframerate()
-                ch = wf.getnchannels()
-                raw = wf.readframes(wf.getnframes())
-            pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, ch)
-            sd.play(pcm, samplerate=sr, blocking=False)
-            duration_s = len(pcm) / sr
-            elapsed = 0.0
-            while elapsed < duration_s:
-                if self._stop_evt.is_set(): sd.stop(); return
-                time.sleep(0.01)
-                elapsed += 0.01
-            sd.wait()
-        except Exception as e:
-            print(f"[TTS] sounddevice error: {e}")
-
-    def _worker(self):
-        while True:
-            item = self._queue.get()
-            if item is None: break
-            if self._stop_evt.is_set():
-                while not self._queue.empty():
-                    try: self._queue.get_nowait()
-                    except: pass
-                continue
-            text, voice_name = item
-            if self._stop_evt.is_set(): continue
-            # Pre-generated PCM wav bytes path — play directly, no temp file needed
-            if text == "__pcm__":
-                wav_bytes = voice_name  # second slot carries bytes
-                self._play_pcm_direct(bytes(wav_bytes))
-                continue
-            text = text.strip()
-            if not text: continue
-            with self._lock: voice = self._voices.get(voice_name)
-            if voice is None:
-                voice = self._load_voice(voice_name)
-            if voice is None: continue
+    def _reader(self):
+        while self._proc and self._proc.poll() is None:
             try:
-                if self._stop_evt.is_set(): continue
-                import numpy as np
-                # synthesize() yields AudioChunk objects — must be serialised
-                with self._synth_lock:
-                    chunks = list(voice.synthesize(text))
-                if self._stop_evt.is_set(): continue  # aborted while synthesising
-                if not chunks: continue
-                # Build a single int16 PCM buffer from all chunks
-                pcm_parts = []
-                for chunk in chunks:
-                    if hasattr(chunk, 'audio_int16'):
-                        arr = np.frombuffer(chunk.audio_int16, dtype=np.int16)
-                    elif hasattr(chunk, 'audio_float_array'):
-                        arr = (np.array(chunk.audio_float_array, dtype=np.float32)
-                               * 32767).clip(-32768, 32767).astype(np.int16)
-                    else:
-                        continue
-                    pcm_parts.append(arr)
-                if not pcm_parts: continue
-                pcm_all = np.concatenate(pcm_parts)
-                # Build wav in memory and play directly — no temp file
-                buf = io.BytesIO()
-                with wave.open(buf, "wb") as wf:
-                    wf.setnchannels(chunks[0].sample_channels)
-                    wf.setsampwidth(2)
-                    wf.setframerate(chunks[0].sample_rate)
-                    wf.writeframes(pcm_all.tobytes())
-                self._play_pcm_direct(buf.getvalue())
-            except Exception as e:
-                print(f"[TTS] Playback error: {e}")
+                line = self._proc.stdout.readline()
+                if not line: break
+                msg = json.loads(line.strip())
+                status = msg.get("status","")
+                if status == "prebaked" and self._prebake_cb:
+                    self._prebake_cb(msg.get("id",0), msg.get("duration_ms",0))
+                elif status == "done" and self._done_cb:
+                    self._done_cb(msg.get("id",-1))
+            except Exception:
+                pass
 
-    def synthesize_to_pcm(self, text, voice_name=None):
-        """Synthesize text → (wav_bytes, duration_ms) without playing. Blocking. Returns (None,0) on failure."""
+    def _send(self, payload):
+        with self._write_lock:
+            if self._proc and self._proc.poll() is None:
+                try:
+                    self._proc.stdin.write(json.dumps(payload) + "\n")
+                    self._proc.stdin.flush()
+                    return True
+                except Exception as e:
+                    print(f"[TTS] Send error: {e}")
+        return False
+
+    def prebake(self, item_id, text, voice_name=None):
+        """Synthesize and hold. prebake_cb fires when ready."""
+        if not text.strip(): return
         if voice_name is None: voice_name = self._voice
-        with self._lock: voice = self._voices.get(voice_name)
-        if voice is None: voice = self._load_voice(voice_name)
-        if voice is None: return None, 0
-        try:
-            import numpy as np
-            with self._synth_lock:
-                chunks = list(voice.synthesize(text.strip()))
-            if not chunks: return None, 0
-            pcm_parts = []
-            for chunk in chunks:
-                if hasattr(chunk, 'audio_int16'):
-                    arr = np.frombuffer(chunk.audio_int16, dtype=np.int16)
-                elif hasattr(chunk, 'audio_float_array'):
-                    arr = (np.array(chunk.audio_float_array, dtype=np.float32)
-                           * 32767).clip(-32768, 32767).astype(np.int16)
-                else:
-                    continue
-                pcm_parts.append(arr)
-            if not pcm_parts: return None, 0
-            pcm_all = np.concatenate(pcm_parts)
-            sample_rate = chunks[0].sample_rate
-            channels    = chunks[0].sample_channels
-            duration_ms = int(len(pcm_all) / channels / sample_rate * 1000)
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as wf:
-                wf.setnchannels(channels)
-                wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(pcm_all.tobytes())
-            return buf.getvalue(), duration_ms
-        except Exception as e:
-            print(f"[TTS] synthesize_to_pcm error: {e}")
-            return None, 0
+        voice_id = VOICES[voice_name]["id"]
+        self._ready.wait(timeout=30)
+        self._send({"cmd":"prebake","id":item_id,"text":text,"voice":voice_id,"speed":1.0})
 
-    def play_pcm(self, wav_bytes):
-        """Queue pre-generated wav bytes for immediate playback."""
-        if wav_bytes:
-            self._queue.put(("__pcm__", wav_bytes))
+    def play_prebaked(self, item_id):
+        """Play a previously prebaked item."""
+        self._send({"cmd":"play_prebaked","id":item_id})
 
-    def speak(self,text,voice_name=None):
-        if voice_name is None: voice_name=self._voice
-        self._queue.put((text,voice_name))
+    def speak(self, text, voice_name=None):
+        """Synthesize then play immediately (for responses)."""
+        if not text.strip(): return
+        if voice_name is None: voice_name = self._voice
+        voice_id = VOICES[voice_name]["id"]
+        self._ready.wait(timeout=30)
+        self._send({"text":text,"voice":voice_id,"speed":1.0})
 
-    def set_voice(self,name):
-        self._voice=name
-        threading.Thread(target=self._load_voice,args=(name,),daemon=True).start()
+    def set_voice(self, name):
+        self._voice = name
 
     def stop(self):
-        self._stop_evt.set()
-        # Stop sounddevice immediately — no external process to kill
-        try:
-            import sounddevice as sd
-            sd.stop()
-        except: pass
-        while not self._queue.empty():
-            try: self._queue.get_nowait()
-            except: pass
-        # Clear the flag so the next sentence isn't discarded
-        self._stop_evt.clear()
+        self._send({"cmd":"stop"})
 
     def is_ready(self):
-        with self._lock: return bool(self._voices)
-
+        return self._ready.is_set() and self._proc is not None and self._proc.poll() is None
 _tts = None
 
 # ── STT Subprocess manager ────────────────────────────────────────────────────
@@ -598,7 +520,7 @@ class StreamWorker(QThread):
     def _flush_sentences(self, buf):
         # Split on sentence-ending punctuation, keeping delimiter attached to the left part.
         # e.g. "Hello sir. How are you" → ["Hello sir.", "How are you"]
-        parts = re.split(r'(?<=[.!?])\s+', buf)
+        parts = re.split(r'(?<=[.!?]) +', buf)  # space only, not \n
         # Only emit sentences we're sure are complete — i.e. NOT the last fragment,
         # which may still be mid-sentence. Requires at least 2 parts.
         if len(parts) < 2:
@@ -924,6 +846,13 @@ class ThinkBlock(QWidget):
 
 # ── AI message ────────────────────────────────────────────────────────────────
 class AIMessage(QWidget):
+    _THROAT_FRAMES = [
+        "  CLEARING THROAT  ●○○",
+        "  CLEARING THROAT  ○●○",
+        "  CLEARING THROAT  ○○●",
+        "  CLEARING THROAT  ○●○",
+    ]
+
     def __init__(self,show_think=True,parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"background:{BG};")
@@ -942,11 +871,48 @@ class AIMessage(QWidget):
         self.copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.copy_btn.clicked.connect(self._copy)
         cr.addStretch(); cr.addWidget(self.copy_btn); layout.addWidget(copy_row)
+        self._throat_timer = QTimer(self)
+        self._throat_timer.timeout.connect(self._throat_step)
+        self._throat_frame = 0
+
+    def start_throat_clearing(self):
+        """Show pulsing CLEARING THROAT animation while waiting for first TTS prebake."""
+        self._throat_frame = 0
+        self.resp.setStyleSheet(f"color:{WARN};background:transparent;padding:4px 0;")
+        self.resp.setText(self._THROAT_FRAMES[0])
+        self._throat_timer.start(220)
+        # Play cough sound in background thread — no DLL conflict, sounddevice only
+        def _play_cough():
+            try:
+                import sounddevice as sd
+                import numpy as np
+                import wave as _wave
+                cough_path = os.path.join(VOICE_DIR, "cough.wav")
+                if not os.path.exists(cough_path): return
+                with _wave.open(cough_path, 'rb') as wf:
+                    sr  = wf.getframerate()
+                    ch  = wf.getnchannels()
+                    raw = wf.readframes(wf.getnframes())
+                pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, ch)
+                sd.play(pcm, samplerate=sr, blocking=True)
+            except Exception as e:
+                print(f"[COUGH] {e}")
+        threading.Thread(target=_play_cough, daemon=True).start()
+
+    def _throat_step(self):
+        self._throat_frame = (self._throat_frame + 1) % len(self._THROAT_FRAMES)
+        self.resp.setText(self._THROAT_FRAMES[self._throat_frame])
+
+    def stop_throat_clearing(self):
+        self._throat_timer.stop()
+        self.resp.setStyleSheet(f"color:{TEXT};background:transparent;padding:4px 0;")
 
     def update_resp(self,text): self.resp.setText(text)
     def update_think(self,text):
         if self.think_block: self.think_block.append_think(text)
     def finalize(self,text,aborted):
+        self._throat_timer.stop()
+        self.resp.setStyleSheet(f"color:{TEXT};background:transparent;padding:4px 0;")
         self.resp.setText(text+("\n\n[ ABORTED ]" if aborted else ""))
         if self.think_block:
             if aborted: self.think_block.set_aborted()
@@ -995,66 +961,67 @@ class SystemMessage(QWidget):
 
 # ── Boot widget ───────────────────────────────────────────────────────────────
 class BootWidget(QWidget):
-    boot_done=pyqtSignal()
-    LINES=[
-        ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈",ACCENT),
-        ("  J.A.R.V.I.S  v4.1 BY OLLAMA AND ANTHROPIC",TEXT),
-        ("  Just A Rather Very Intelligent System",TEXT),
-        ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈",ACCENT),
-        ("",TEXT),
-        ("  > INITIALIZING NEURONS........",OK_COL),
-        ("  > LOADING ALL MODLES.......",OK_COL),
-        ("  > CALIBRATING RESPONSE STYLE......",OK_COL),
-        ("",TEXT),
-        ("  [ WAITING FOR SYSTEM CONFIRMATION ]",WARN),
+    boot_done = pyqtSignal()
+    LINES = [
+        ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈", ACCENT),
+        ("  J.A.R.V.I.S  v4.1 BY OLLAMA AND ANTHROPIC", TEXT),
+        ("  Just A Rather Very Intelligent System", TEXT),
+        ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈", ACCENT),
+        ("", TEXT),
+        ("  > INITIALIZING NEURONS........", OK_COL),
+        ("  > LOADING ALL MODLES.......", OK_COL),
+        ("  > CALIBRATING RESPONSE STYLE......", OK_COL),
+        ("", TEXT),
+        ("  [ WAITING FOR SYSTEM CONFIRMATION ]", WARN),
     ]
-    # Lines whose text should be spoken — any line starting with ">"
-    # (auto-detected at runtime, no need to update this set manually)
 
     def __init__(self, parent=None, tts_voice=None, tts_on=True):
         super().__init__(parent)
-        # NOTE: uses global _tts directly so it works even if _tts is init'd after _build_ui
-        self._tts_voice  = tts_voice
-        self._tts_on     = tts_on
-        # Pre-baked audio: {line_index: (wav_bytes, duration_ms)}
-        self._audio_cache = {}
-        self._default_interval = 18   # ms per char for non-status lines
+        self._tts_voice        = tts_voice
+        self._tts_on           = tts_on
+        self._default_interval = 18
+
+        # Prebake state: maps line_idx → duration_ms once synthesized
+        self._prebaked_durations = {}
+        # Which > lines exist (by index in LINES)
+        self._spoken_indices = [i for i,(txt,_) in enumerate(self.LINES) if txt.strip().startswith(">")]
+        self._prebake_done   = threading.Event()
 
         self.setStyleSheet(f"background:{BG};")
-        layout=QVBoxLayout(self); layout.setContentsMargins(20,40,20,20); layout.setSpacing(0)
-        self._labels=[]
-        for text,color in self.LINES:
-            l=QLabel(""); l.setFont(make_font())
+        layout = QVBoxLayout(self); layout.setContentsMargins(20,40,20,20); layout.setSpacing(0)
+        self._labels = []
+        for text, color in self.LINES:
+            l = QLabel(""); l.setFont(make_font())
             l.setStyleSheet(f"color:{color};background:transparent;padding:1px 0;")
-            layout.addWidget(l); self._labels.append((l,text,color))
+            layout.addWidget(l); self._labels.append((l, text, color))
         layout.addStretch()
-        self._ollama_ready=False; self._line_idx=self._char_idx=self._dot_count=0; self._line_started=False
-        self._type_timer=QTimer(self); self._type_timer.timeout.connect(self._type_step)
-        self._dot_timer=QTimer(self); self._dot_timer.timeout.connect(self._pulse_dots)
 
-        # Add extra filler labels to ensure matrix covers the full widget height
+        self._ollama_ready  = False
+        self._line_idx      = 0
+        self._char_idx      = 0
+        self._dot_count     = 0
+        self._line_started  = False
+        self._type_timer    = QTimer(self); self._type_timer.timeout.connect(self._type_step)
+        self._dot_timer     = QTimer(self); self._dot_timer.timeout.connect(self._pulse_dots)
+
         self._filler_labels = []
-        for _ in range(20):  # enough to fill any screen height
+        for _ in range(20):
             fl = QLabel(""); fl.setFont(make_font())
             fl.setStyleSheet(f"color:{OK_COL};background:transparent;padding:1px 0;")
             layout.insertWidget(layout.count()-1, fl)
             self._filler_labels.append(fl)
 
-        # If TTS is on, show matrix static animation while waiting for audio prebake.
-        # If TTS is off, start immediately.
         if tts_on:
             self._matrix_timer = QTimer(self)
             self._matrix_timer.timeout.connect(self._matrix_step)
-            self._matrix_timer.start(150)  # slower = easier on the eyes
-            threading.Thread(target=self._prebake_audio, daemon=True).start()
+            self._matrix_timer.start(150)
+            threading.Thread(target=self._prebake_all, daemon=True).start()
         else:
             self._type_timer.start(self._default_interval)
 
-    # Characters used for matrix static effect
     _MATRIX_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*><[]{}|◈▌░▒▓"
 
     def _matrix_step(self):
-        """Fill all labels (including fillers) with random chars — green matrix static."""
         import random
         chars = self._MATRIX_CHARS
         all_labels = [(l, full) for l, full, color in self._labels] +                      [(fl, "") for fl in self._filler_labels]
@@ -1064,91 +1031,83 @@ class BootWidget(QWidget):
             l.setText(rand_text)
             l.setStyleSheet(f"color:{OK_COL};background:transparent;padding:1px 0;")
 
-    def _prebake_audio(self):
-        """
-        Wait for TTS ready, synthesize each > line into its own wav bytes,
-        store in _audio_cache keyed by line index. Animation waits (blink cursor)
-        until all clips are ready, then starts. Each clip plays the instant its
-        line starts typing via sounddevice — zero latency, perfectly in sync.
-        """
-        # Wait up to 30s for _tts global to exist and voice to load
+    def _prebake_all(self):
+        """Background: wait for TTS ready, prebake all spoken lines, then start animation."""
         for _ in range(300):
             if _tts and _tts.is_ready(): break
             time.sleep(0.1)
-        if not _tts or not _tts.is_ready():
+        if not (_tts and _tts.is_ready()):
+            # TTS failed — start without audio
             QTimer.singleShot(0, self._start_animation)
             return
-
-
-        for idx, (text, _) in enumerate(self.LINES):
-            stripped = text.strip()
-            if stripped.startswith(">"):
-                spoken = stripped.lstrip(">").strip().rstrip(".").strip()
-                if spoken:
-                    wav_bytes, duration_ms = _tts.synthesize_to_pcm(spoken, self._tts_voice)
-                    if wav_bytes and duration_ms > 0:
-                        char_count = max(len(text), 1)
-                        interval   = max(1, duration_ms // char_count)
-                        # Store (wav_bytes, per_char_interval) for this line
-                        self._audio_cache[idx] = (wav_bytes, interval)
-
-        # Also pre-initialize sounddevice so first play has zero driver startup cost
-        try:
-            import sounddevice as sd
-            import numpy as np
-            sd.play(np.zeros((1, 1), dtype=np.int16), samplerate=22050, blocking=False)
-            sd.stop()
-        except: pass
-
+        # Request prebake for each spoken line
+        for idx in self._spoken_indices:
+            txt, _ = self.LINES[idx]
+            spoken = txt.strip().lstrip(">").strip().rstrip(".").strip()
+            if spoken:
+                _tts.prebake(idx, spoken, self._tts_voice)
+        # Wait until all prebakes are confirmed (prebake_cb sets _prebaked_durations)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if len(self._prebaked_durations) >= len(self._spoken_indices):
+                break
+            time.sleep(0.05)
         QTimer.singleShot(0, self._start_animation)
 
+    def on_prebaked(self, item_id, duration_ms):
+        """Called from MainWindow when worker confirms a prebake is ready."""
+        self._prebaked_durations[item_id] = duration_ms
+
     def _start_animation(self):
-        """Called on main thread once all audio is pre-baked. Clears matrix, starts typewriter."""
         self._matrix_timer.stop()
-        # Hide filler labels — they were only for the matrix effect
         for fl in self._filler_labels:
             fl.hide()
-        # Clear all labels and restore their original colors before typewriter starts
         for l, full, color in self._labels:
             l.setText("")
             l.setStyleSheet(f"color:{color};background:transparent;padding:1px 0;")
         self._type_timer.start(self._default_interval)
 
-    def set_ollama_ready(self): self._ollama_ready=True
+    def set_ollama_ready(self): self._ollama_ready = True
 
     def _type_step(self):
-        if self._line_idx>=len(self.LINES):
+        if self._line_idx >= len(self.LINES):
             self._type_timer.stop(); self._dot_timer.start(400); return
-        l,full,color=self._labels[self._line_idx]
-        if not full: self._line_idx+=1; self._char_idx=0; self._line_started=False; return
+        l, full, color = self._labels[self._line_idx]
+        if not full:
+            self._line_idx += 1; self._char_idx = 0; self._line_started = False; return
         if not self._line_started:
             self._line_started = True
-            if self._line_idx in self._audio_cache:
-                wav_bytes, interval = self._audio_cache[self._line_idx]
-                self._type_timer.setInterval(interval)
-                # Play this line's pre-baked audio instantly via sounddevice
-                if _tts: _tts.play_pcm(wav_bytes)
+            stripped = full.strip()
+            if stripped.startswith(">") and self._tts_on and _tts:
+                duration_ms = self._prebaked_durations.get(self._line_idx, 0)
+                if duration_ms > 0:
+                    # Start audio and sync typing speed to audio duration
+                    _tts.play_prebaked(self._line_idx)
+                    interval = max(8, duration_ms // max(len(full), 1))
+                    self._type_timer.setInterval(interval)
+                else:
+                    self._type_timer.setInterval(self._default_interval)
             else:
                 self._type_timer.setInterval(self._default_interval)
-        if self._char_idx<=len(full):
-            cur="▌" if self._char_idx<len(full) else ""
-            l.setText(full[:self._char_idx]+cur); self._char_idx+=1
+        if self._char_idx <= len(full):
+            cur = "▌" if self._char_idx < len(full) else ""
+            l.setText(full[:self._char_idx] + cur); self._char_idx += 1
         else:
             l.setText(full)
-            self._line_idx+=1; self._char_idx=0; self._line_started=False
+            self._line_idx += 1; self._char_idx = 0; self._line_started = False
             self._type_timer.setInterval(self._default_interval)
 
     def _pulse_dots(self):
         if self._ollama_ready:
             self._dot_timer.stop()
-            l,_,_=self._labels[-1]
+            l, _, _ = self._labels[-1]
             l.setText("  [ ◉  ALL SYSTEMS ONLINE ]")
             l.setStyleSheet(f"color:{OK_COL};background:transparent;padding:1px 0;")
-            QTimer.singleShot(800,self.boot_done.emit)
+            QTimer.singleShot(800, self.boot_done.emit)
         else:
-            self._dot_count=(self._dot_count+1)%4
-            dots="."*self._dot_count+" "*(3-self._dot_count)
-            l,_,_=self._labels[-1]; l.setText(f"  [ WAITING{dots} ]")
+            self._dot_count = (self._dot_count + 1) % 4
+            dots = "." * self._dot_count + " " * (3 - self._dot_count)
+            l, _, _ = self._labels[-1]; l.setText(f"  [ WAITING{dots} ]")
 
 # ── History dialog ────────────────────────────────────────────────────────────
 class HistoryDialog(QDialog):
@@ -1263,16 +1222,17 @@ class MainWindow(QMainWindow):
     _sig_stt_done   = pyqtSignal(str)
     _sig_stt_error  = pyqtSignal(str)
     _sig_status     = pyqtSignal(str,str)
-    _sig_play_wav   = pyqtSignal(bytes)      # safely play pre-baked wav from any thread
-    _sig_greet_ready= pyqtSignal(int, bytes) # (interval_ms, wav_bytes) — start greeting in sync
-    _sig_toggle_win = pyqtSignal()           # raise/minimize window from hotkey thread
+    _sig_greet_ready = pyqtSignal()            # start greeting typewriter
+    _sig_prebaked    = pyqtSignal(int, int)    # (id, duration_ms) prebake ready
+    _sig_unleash     = pyqtSignal(str)         # flush buffered text + start voice
+    _sig_toggle_win  = pyqtSignal()            # raise/minimize window from hotkey thread
 
     def __init__(self):
         super().__init__()
         self.history=[]; self.busy=False
         self.provider=DEFAULT_PROVIDER; self.think_on=True
         self.auto_scroll=True; self.stay_on_top=False
-        self.tts_on=True; self.tts_voice="NORTHERN"
+        self.tts_on=True; self.tts_voice="MALE"
         self._stop_evt=threading.Event()
         self._current_ai=None; self._attachments=[]
         self._conv_id=str(uuid.uuid4())
@@ -1288,7 +1248,8 @@ class MainWindow(QMainWindow):
         self.auto_scroll=sett.get("auto_scroll",True)
         self.stay_on_top=sett.get("stay_on_top",False)
         self.tts_on     =sett.get("tts_on",True)
-        self.tts_voice  =sett.get("tts_voice","NORTHERN")
+        _saved_voice    =sett.get("tts_voice","MALE")
+        self.tts_voice  =_saved_voice if _saved_voice in VOICES else "MALE"
 
         # Always start a fresh conversation on launch
 
@@ -1305,10 +1266,12 @@ class MainWindow(QMainWindow):
 
         # TTS
         global _tts
-        def _tts_status(msg,level="warn"):
-            color={"ok":OK_COL,"warn":WARN,"err":ERR}.get(level,WARN)
-            self._sig_status.emit(msg,color)
-        _tts=TTSEngine(status_cb=_tts_status)
+        def _tts_status(msg, level="warn"):
+            color = {"ok":OK_COL,"warn":WARN,"err":ERR}.get(level, WARN)
+            self._sig_status.emit(msg, color)
+        def _tts_prebake_cb(item_id, duration_ms):
+            self._sig_prebaked.emit(item_id, duration_ms)
+        _tts = TTSEngine(status_cb=_tts_status, prebake_cb=_tts_prebake_cb)
         _tts.set_voice(self.tts_voice)
 
         # STT subprocess (isolated process — avoids ctranslate2/Qt DLL conflict)
@@ -1318,9 +1281,10 @@ class MainWindow(QMainWindow):
             self._sig_status.emit(msg,color)
         _stt_proc = STTProcess(status_cb=_stt_status)
 
-        self._sig_play_wav.connect(lambda b: _tts.play_pcm(b) if _tts else None)
         self._sig_toggle_win.connect(self._toggle_window)
         self._sig_greet_ready.connect(self._on_greet_ready)
+        self._sig_prebaked.connect(self._on_prebaked)
+        self._sig_unleash.connect(self._on_unleash)
         self._sig_chunk.connect(self._on_chunk)
         self._sig_think.connect(self._on_think)
         self._sig_sentence.connect(self._on_sentence)
@@ -1548,11 +1512,16 @@ class MainWindow(QMainWindow):
         chosen=menu.exec(pos)
 
         if chosen==a1:
-            self.tts_on=not self.tts_on
-            if not self.tts_on and _tts: _tts.stop()
+            # Lock TTS toggle during boot, greeting, or active response
+            locked = self.boot_widget is not None or                      (hasattr(self,'_greet_timer') and self._greet_timer and self._greet_timer.isActive()) or                      self.busy
+            if not locked:
+                self.tts_on = not self.tts_on
+                if not self.tts_on and _tts: _tts.stop()
         elif chosen==a2:
-            self.tts_voice="SEMAINE" if self.tts_voice=="NORTHERN" else "NORTHERN"
-            if _tts: _tts.set_voice(self.tts_voice)
+            locked = self.boot_widget is not None or                      (hasattr(self,'_greet_timer') and self._greet_timer and self._greet_timer.isActive()) or                      self.busy
+            if not locked:
+                self.tts_voice = "FEMALE" if self.tts_voice=="MALE" else "MALE"
+                if _tts: _tts.set_voice(self.tts_voice)
         elif chosen==a3:
             self.auto_scroll=not self.auto_scroll
         elif chosen==a4:
@@ -1612,61 +1581,61 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self._check_ollama,daemon=True).start()
 
     # ── Boot → greeting ───────────────────────────────────────────────────────
+    def _on_prebaked(self, item_id, duration_ms):
+        """Called on main thread when a prebake is ready. Route to boot, greeting, or response."""
+        if item_id == -1:
+            # Greeting
+            self._greet_duration = duration_ms
+            self._sig_greet_ready.emit()
+        elif item_id == 100:
+            # First response sentence — unleash display and audio together
+            self._sig_unleash.emit(self._chunk_buffer)
+        elif self.boot_widget is not None:
+            # Boot lines
+            self.boot_widget.on_prebaked(item_id, duration_ms)
+
     def _show_greeting(self):
-        self.boot_widget.deleteLater(); self.boot_widget=None
+        self.boot_widget.deleteLater(); self.boot_widget = None
         if self.history: self._rebuild_feed(); self._unlock_input(); return
-        msg=AIMessage(show_think=False)
-        self.feed_layout.insertWidget(self.feed_layout.count()-1,msg)
+        msg = AIMessage(show_think=False)
+        self.feed_layout.insertWidget(self.feed_layout.count()-1, msg)
         self._start_greeting(msg)
 
     def _start_greeting(self, msg):
-        """Pre-bake audio first, then start typing and audio simultaneously for perfect sync."""
-        # Stop any previous greeting timer
+        """Prebake greeting audio while showing throat-clearing, then start typing+audio together."""
         if hasattr(self, '_greet_timer') and self._greet_timer:
             try: self._greet_timer.stop()
             except: pass
-        self._greet_text = GREETING_TEXT
-        self._greet_idx  = 0
-        self._greet_msg  = msg
+        self._greet_text     = GREETING_TEXT
+        self._greet_idx      = 0
+        self._greet_msg      = msg
+        self._greet_duration = 0
 
-        # Show a blinking cursor while waiting for audio to be ready
-        msg.resp.setText("▌")
-
-        if self.tts_on and _tts:
-            def _prebake():
-                for _ in range(50):
-                    if _tts.is_ready(): break
-                    time.sleep(0.1)
-                wav_bytes, duration_ms = _tts.synthesize_to_pcm(GREETING_TEXT, self.tts_voice)
-                # Calculate typing interval to finish exactly when audio ends
-                char_count   = max(len(GREETING_TEXT), 1)
-                if wav_bytes and duration_ms > 0:
-                    interval = max(1, duration_ms // char_count)
-                else:
-                    interval = 22
-                    wav_bytes = None
-                # Signal main thread to start both together
-                self._sig_greet_ready.emit(interval, wav_bytes if wav_bytes else b"")
-            threading.Thread(target=_prebake, daemon=True).start()
+        if self.tts_on and _tts and _tts.is_ready():
+            # Show throat clearing while prebaking
+            msg.start_throat_clearing()
+            _tts.prebake(-1, GREETING_TEXT, self.tts_voice)
         else:
-            # No TTS — start typing immediately at default speed
-            self._greet_timer = QTimer(self)
-            self._greet_timer.timeout.connect(self._greet_step)
-            self._greet_timer.start(22)
+            msg.resp.setText("▌")
+            self._sig_greet_ready.emit()
 
-    def _on_greet_ready(self, interval, wav_bytes):
-        """Called on main thread when audio prebake is done — start typing + audio together."""
+    def _on_greet_ready(self):
+        """Called on main thread — audio is prebaked and ready. Start typing + playback together."""
+        self._greet_msg.stop_throat_clearing()
+        if self.tts_on and _tts and self._greet_duration > 0:
+            _tts.play_prebaked(-1)
+            interval = max(8, self._greet_duration // max(len(GREETING_TEXT), 1))
+        else:
+            interval = 22
         self._greet_timer = QTimer(self)
         self._greet_timer.timeout.connect(self._greet_step)
         self._greet_timer.start(interval)
-        if wav_bytes and _tts:
-            _tts.play_pcm(bytes(wav_bytes))
 
     def _greet_step(self):
-        if self._greet_idx<=len(self._greet_text):
-            cur="▌" if self._greet_idx<len(self._greet_text) else ""
-            self._greet_msg.resp.setText(self._greet_text[:self._greet_idx]+cur)
-            self._greet_idx+=1; self._scroll_bottom()
+        if self._greet_idx <= len(self._greet_text):
+            cur = "▌" if self._greet_idx < len(self._greet_text) else ""
+            self._greet_msg.resp.setText(self._greet_text[:self._greet_idx] + cur)
+            self._greet_idx += 1; self._scroll_bottom()
         else:
             self._greet_timer.stop()
             self._greet_msg.resp.setText(self._greet_text)
@@ -1889,10 +1858,17 @@ class MainWindow(QMainWindow):
         self._sig_status.emit(f"⚠  STT: {err[:30]}", ERR)
 
     # ── TTS ───────────────────────────────────────────────────────────────────
-    def _on_sentence(self,sentence):
-        if self.tts_on and _tts and _tts.is_ready():
-            clean=re.sub(r'[*_`#\[\]()]','',sentence).strip()
-            if clean: _tts.speak(clean,self.tts_voice)
+    def _on_sentence(self, sentence):
+        if not (self.tts_on and _tts and _tts.is_ready()): return
+        clean = re.sub(r'[*_`#\[\]()]', '', sentence).replace('\n', ' ').strip()
+        clean = re.sub(r' +', ' ', clean)  # collapse multiple spaces
+        if not clean: return
+        if not self._first_sentence_sent:
+            # Prebake first sentence — _on_prebaked will unleash display + audio
+            self._first_sentence_sent = True
+            _tts.prebake(100, clean, self.tts_voice)
+        else:
+            _tts.speak(clean, self.tts_voice)
 
     # ── Send ──────────────────────────────────────────────────────────────────
     def send(self):
@@ -1941,14 +1917,21 @@ class MainWindow(QMainWindow):
         )
 
         self.s_tps.setText("…"); self.s_tok.setText("…"); self.s_time.setText("…")
-        self._stop_evt.clear(); self.busy=True
+        self._stop_evt.clear(); self.busy = True
         self.send_btn.setEnabled(False); self.abort_btn.setEnabled(True)
-        self.auto_scroll=True
+        self.auto_scroll = True
         if _tts: _tts.stop()
 
-        show_think=self.think_on and is_local
-        self._current_ai=AIMessage(show_think=show_think)
+        # TTS unleash state — holds text display until first sentence prebaked
+        self._tts_unleashed = not (self.tts_on and _tts and _tts.is_ready())
+        self._chunk_buffer  = ""
+        self._first_sentence_sent = False
+
+        show_think = self.think_on and is_local
+        self._current_ai = AIMessage(show_think=show_think)
         self._add_widget(self._current_ai)
+        if not self._tts_unleashed:
+            self._current_ai.start_throat_clearing()
 
         self._worker=StreamWorker(prov,full_messages,system_text,show_think,self._stop_evt)
         self._worker.chunk.connect(self._sig_chunk)
@@ -1963,28 +1946,50 @@ class MainWindow(QMainWindow):
         if _tts: _tts.stop()
 
     # ── Stream callbacks ──────────────────────────────────────────────────────
-    def _on_chunk(self,text):
-        if self._current_ai: self._current_ai.update_resp(text+" ▌"); self._scroll_bottom()
+    def _on_chunk(self, text):
+        if not self._current_ai: return
+        if self.tts_on and not self._tts_unleashed:
+            # Buffer chunks until first sentence prebake is ready
+            self._chunk_buffer = text  # StreamWorker sends full accumulated text each chunk
+            # Don't update display — throat clearing animation is showing
+        else:
+            self._current_ai.update_resp(text + " ▌")
+            self._scroll_bottom()
 
-    def _on_think(self,text):
+    def _on_unleash(self, buffered_text):
+        """First sentence prebaked — show all buffered text and start voice simultaneously."""
+        if not self._current_ai: return
+        self._tts_unleashed = True
+        self._current_ai.stop_throat_clearing()
+        if buffered_text:
+            self._current_ai.update_resp(buffered_text + " ▌")
+        self._scroll_bottom()
+        # Play the prebaked first sentence
+        if _tts: _tts.play_prebaked(100)
+
+    def _on_think(self, text):
         if self._current_ai: self._current_ai.update_think(text); self._scroll_bottom()
 
-    def _on_stats(self,tps,tok,elapsed):
+    def _on_stats(self, tps, tok, elapsed):
         self.s_tps.setText(f"{tps:.1f}"); self.s_tok.setText(str(tok))
         self.s_time.setText(f"{elapsed:.1f}s")
 
-    def _on_stream_done(self,text,aborted):
-        if self._current_ai: self._current_ai.finalize(text,aborted); self._scroll_bottom()
-        self.abort_btn.setEnabled(False); self._current_ai=None
+    def _on_stream_done(self, text, aborted):
+        if self._current_ai:
+            # If TTS never unleashed (very short response or TTS off), show text now
+            if not self._tts_unleashed and self._current_ai:
+                self._current_ai.stop_throat_clearing()
+            self._current_ai.finalize(text, aborted); self._scroll_bottom()
+        self.abort_btn.setEnabled(False); self._current_ai = None
+        self._tts_unleashed = True  # reset
         if not aborted:
             self.history.append({"role":"assistant","content":text})
-            save_conv(self._conv_id,conv_title(self.history),self.history)
-            # Execute any PC control commands embedded in the response
+            save_conv(self._conv_id, conv_title(self.history), self.history)
             for tag, arg in parse_commands(text):
                 result = execute_pc_command(tag, arg, confirm_cb=self._confirm_destructive)
                 if result:
                     self._add_widget(SystemMessage(f"◈  {result}", ACCENT))
-        self.busy=False; self.send_btn.setEnabled(True)
+        self.busy = False; self.send_btn.setEnabled(True)
 
     def _confirm_destructive(self, message):
         """Confirmation dialog for destructive commands like shutdown/restart."""
