@@ -21,7 +21,7 @@ DATA_DIR  = os.path.join(APP_DIR, "jarvis_data")
 CONV_DIR  = os.path.join(DATA_DIR, "conversations")
 MEM_FILE  = os.path.join(DATA_DIR, "memory.json")
 SETT_FILE = os.path.join(DATA_DIR, "settings.json")
-VOICE_DIR = os.path.join(APP_DIR, "jarvis_voices")
+VOICE_DIR = os.path.join(APP_DIR, "jarvis_tts")
 STT_MODEL_DIR = r"C:\Users\Hadi\Desktop\holder\J.A.R.V.I.S-AI\jarvis_stt"  # local model folder
 for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 
@@ -275,7 +275,7 @@ def stream_anthropic(model,messages,system_text,api_key):
                     except Exception: pass
 
 # ── TTS Worker script path ────────────────────────────────────────────────────
-TTS_WORKER_SCRIPT = os.path.join(APP_DIR, "jarvis_tts_worker.py")
+TTS_WORKER_SCRIPT = os.path.join(APP_DIR, "jarvis_tts", "jarvis_tts_worker.py")
 
 # ── TTS Engine (kokoro-onnx via subprocess) ───────────────────────────────────
 class TTSEngine:
@@ -391,7 +391,7 @@ _tts = None
 # Windows. We run it in a completely separate Python process and talk via JSON
 # over stdin/stdout — zero shared memory, zero DLL conflicts.
 
-STT_WORKER_SCRIPT = os.path.join(APP_DIR, "jarvis_stt_worker.py")
+STT_WORKER_SCRIPT = os.path.join(APP_DIR, "jarvis_stt", "jarvis_stt_worker.py")
 
 class STTProcess:
     """
