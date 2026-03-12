@@ -66,16 +66,17 @@ A fully local, Iron Man–inspired AI desktop assistant built with PyQt6. Suppor
 ## Project Structure
 
 ```
-Jarvis/
+J.A.R.V.I.S-AI/
 ├── jarvis.pyw              # Main application (run with pythonw, no console)
-├── jarvis_stt_worker.py    # STT subprocess worker (do not run directly)
-├── jarvis_tts_worker.py    # TTS subprocess worker (do not run directly)
 ├── start_jarvis.vbs        # Silent launcher script for Task Scheduler
-├── jarvis_voices/          # Kokoro TTS model and voice files (download separately)
-│   ├── kokoro-v1.0.fp16-gpu.onnx   # Kokoro model (GPU, recommended)
-│   ├── voices-v1.0.bin             # Kokoro voice pack
-│   └── cough.wav                   # Cough sound effect for throat-clearing animation
-├── jarvis_stt/             # Whisper STT model files (download separately)
+├── README.md
+├── jarvis_tts/             # Kokoro TTS model, voice files and worker (download separately)
+│   ├── jarvis_tts_worker.py        # TTS subprocess worker (do not run directly)
+│   ├── kokoro-v1.0.fp16-gpu.onnx  # Kokoro model (GPU, recommended)
+│   ├── voices-v1.0.bin            # Kokoro voice pack
+│   └── cough.wav                  # Cough sound effect for throat-clearing animation
+├── jarvis_stt/             # Whisper STT model files and worker (download separately)
+│   ├── jarvis_stt_worker.py        # STT subprocess worker (do not run directly)
 │   ├── config.json
 │   ├── model.bin
 │   ├── tokenizer.json
@@ -85,14 +86,14 @@ Jarvis/
 │   ├── memory.json         # Persistent memory facts
 │   ├── api_key.txt         # Your Anthropic API key (create this manually)
 │   └── conversations/      # Saved conversation JSON files
-└── README.md
+└── assets/
 ```
 
 ---
 
 ## Requirements
 
-Personally running on Windows 11 with 16 GB DDR4 3200MHz and an RTX 3050 6GB (laptop). Getting 25 tok/sec for the 4b and 15 tok/sec for the 9b. TTS synthesis with the GPU model is near-instant.
+Personally running on Windows 11 with 16 GB DDR4 3200MHz and an RTX 3050 6GB (laptop). Getting 25 tok/sec for the 4b and 15 tok/sec for the 9b. TTS synthesis with the GPU model is near-instant but does come at a cost if tok/sec.
 
 ---
 
@@ -190,11 +191,11 @@ JARVIS uses [Kokoro-ONNX](https://github.com/thewh1teagle/kokoro-onnx) for voice
 
 #### Step 1 — Create the voices folder
 
-Inside your Jarvis project folder, create a folder called `jarvis_voices/` if it doesn't already exist.
+Inside your Jarvis project folder, create a folder called `jarvis_tts/` if it doesn't already exist.
 
 #### Step 2 — Download the model files
 
-Download both files and place them in `jarvis_voices/`:
+Download both files and place them in `jarvis_tts/`:
 
 | File | Download |
 |---|---|
@@ -203,14 +204,15 @@ Download both files and place them in `jarvis_voices/`:
 
 > **GPU vs CPU model:** `fp16-gpu.onnx` requires an NVIDIA GPU with CUDA. If you don't have one, download `kokoro-v1.0.int8.onnx` instead and update `MODEL_FILE` in `TTSEngine` inside `jarvis.pyw`. The GPU model synthesizes audio near-instantly; the CPU model takes 2–3 seconds per sentence.
 
-#### Step 3 — (already in repo) Add a cough sound
+#### Step 3 — (Optional) Add a cough sound
 
-Download any short cough `.wav` file (e.g. from [freesound.org](https://freesound.org) — filter by CC0 license) and place it in `jarvis_voices/` as `cough.wav`. JARVIS will play it automatically when the throat-clearing animation starts.
+Download any short cough `.wav` file (e.g. from [freesound.org](https://freesound.org) — filter by CC0 license) and place it in `jarvis_tts/` as `cough.wav`. JARVIS will play it automatically when the throat-clearing animation starts.
 
-After setup, your `jarvis_voices/` folder should look like this:
+After setup, your `jarvis_tts/` folder should look like this:
 
 ```
-jarvis_voices/
+jarvis_tts/
+├── jarvis_tts_worker.py
 ├── kokoro-v1.0.fp16-gpu.onnx
 ├── voices-v1.0.bin
 └── cough.wav          (optional)
@@ -264,6 +266,7 @@ After downloading, your `jarvis_stt/` folder should look like this:
 
 ```
 jarvis_stt/
+├── jarvis_stt_worker.py
 ├── config.json
 ├── model.bin
 ├── tokenizer.json
@@ -271,19 +274,9 @@ jarvis_stt/
 └── preprocessor_config.json
 ```
 
-#### Step 3 — Update the path in jarvis.pyw
+#### Step 3 — No path configuration needed
 
-Open `jarvis.pyw` in a text editor and find this line near the top:
-
-```python
-STT_MODEL_DIR = r"path"
-```
-
-Change it to the full path of your own `jarvis_stt/` folder:
-
-```python
-STT_MODEL_DIR = r"C:\Users\YourName\Desktop\Jarvis\jarvis_stt"
-```
+`STT_MODEL_DIR` is automatically set to the `jarvis_stt/` folder inside your project directory. As long as you place the model files there, no changes to `jarvis.pyw` are required.
 
 #### Available model sizes
 
@@ -308,7 +301,7 @@ If you want to use Claude cloud models (Haiku, Sonnet, Opus), you need an Anthro
 sk-ant-api03-...
 ```
 
-> The key is never hardcoded in the source. `jarvis_data/` is ignored by git so your key stays private.
+> The key is never hardcoded in the source.
 
 > **Pricing:** Anthropic charges per token. Haiku is the cheapest, Opus is the most expensive. Check [anthropic.com/pricing](https://www.anthropic.com/pricing) for current rates. You do NOT need an API key to use local Ollama models.
 
@@ -448,7 +441,7 @@ Click **OK**. Test it by locking your PC with `Win + L` and then typing your pas
 
 Type your message in the green input box at the bottom and press **Enter** to send. Press **Shift + Enter** for a new line without sending.
 
-**Global hotkey:** Press `Ctrl + Alt + J` from anywhere on your PC to instantly show or hide the JARVIS window — no need to click the taskbar you can also make a shortcut for the script and use this hot key to lunch the app if u closed it for some reason.
+**Global hotkey:** Press `Ctrl + Alt + J` from anywhere on your PC to instantly show or hide the JARVIS window — no need to click the taskbar.
 
 ---
 
@@ -670,7 +663,7 @@ ALLOWED_DIRS = [
 - Make sure you have pulled the model: `ollama pull qwen3.5:4b`
 
 **TTS not working / "TTS FAILED" in status bar**
-- Check that `kokoro-v1.0.fp16-gpu.onnx` and `voices-v1.0.bin` are in `jarvis_voices/`
+- Check that `kokoro-v1.0.fp16-gpu.onnx` and `voices-v1.0.bin` are in `jarvis_tts/`
 - Make sure `kokoro-onnx` and `onnxruntime-gpu` are installed
 - If you don't have an NVIDIA GPU, switch to the CPU model (`kokoro-v1.0.int8.onnx`) and install `onnxruntime` instead of `onnxruntime-gpu`
 - Check the console for `[TTS] Worker failed:` errors
@@ -681,7 +674,7 @@ ALLOWED_DIRS = [
 - If VRAM is full (running a large LLM), the TTS worker may fall back to CPU automatically
 
 **No cough sound**
-- Make sure `cough.wav` is in `jarvis_voices/`
+- Make sure `cough.wav` is in `jarvis_tts/`
 - The file must be a valid WAV file (not MP3 renamed to .wav)
 
 **Anthropic API errors**
