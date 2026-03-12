@@ -22,7 +22,7 @@ CONV_DIR  = os.path.join(DATA_DIR, "conversations")
 MEM_FILE  = os.path.join(DATA_DIR, "memory.json")
 SETT_FILE = os.path.join(DATA_DIR, "settings.json")
 VOICE_DIR = os.path.join(APP_DIR, "jarvis_tts")
-STT_MODEL_DIR = r"C:\Users\Hadi\Desktop\holder\J.A.R.V.I.S-AI\jarvis_stt"  # local model folder
+STT_MODEL_DIR = os.path.join(APP_DIR, "jarvis_stt")
 for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────────────
