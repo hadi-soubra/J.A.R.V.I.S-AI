@@ -10,9 +10,23 @@ MODEL_DIR = sys.argv[1] if len(sys.argv) > 1 else "jarvis_stt"
 
 def main():
     try:
-        import numpy as np
         from faster_whisper import WhisperModel
-        model = WhisperModel(MODEL_DIR, device="cpu", compute_type="int8")
+        # Prefer GPU when available, but fall back cleanly unless strict GPU is requested.
+        # Environment overrides:
+        #   JARVIS_STT_DEVICE=cpu|cuda|auto
+        #   JARVIS_STT_COMPUTE=float16|int8_float16|int8|auto
+        #   JARVIS_STT_STRICT_GPU=1  (if set, no fallback; fail if CUDA can't load)
+        # Default to CPU for maximum compatibility on Windows.
+        device = os.environ.get("JARVIS_STT_DEVICE", "cpu")
+        compute_type = os.environ.get("JARVIS_STT_COMPUTE", "int8")
+        strict_gpu = os.environ.get("JARVIS_STT_STRICT_GPU", "").strip() in ("1", "true", "True", "YES", "yes")
+        try:
+            model = WhisperModel(MODEL_DIR, device=device, compute_type=compute_type)
+        except Exception:
+            if strict_gpu:
+                raise
+            # Common case on Windows: CUDA not present/configured.
+            model = WhisperModel(MODEL_DIR, device="cpu", compute_type="int8")
         # Signal ready
         sys.stdout.write(json.dumps({"status": "ready"}) + "\n")
         sys.stdout.flush()
@@ -30,7 +44,21 @@ def main():
             raw = base64.b64decode(req["audio_b64"])
             import numpy as np
             audio_np = np.frombuffer(raw, dtype=np.float32)
-            segments, _ = model.transcribe(audio_np, beam_size=5, language="en", vad_filter=True)
+            # Fast defaults for interactive assistant usage.
+            beam_size = int(os.environ.get("JARVIS_STT_BEAM", "1"))
+            language = os.environ.get("JARVIS_STT_LANGUAGE", "en")
+            vad_min_silence_ms = int(os.environ.get("JARVIS_STT_VAD_MIN_SILENCE_MS", "350"))
+            segments, _ = model.transcribe(
+                audio_np,
+                beam_size=max(1, beam_size),
+                best_of=1,
+                language=language,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": max(0, vad_min_silence_ms)},
+                condition_on_previous_text=False,
+                temperature=0.0,
+                word_timestamps=False,
+            )
             text = " ".join(s.text.strip() for s in segments).strip()
             sys.stdout.write(json.dumps({"text": text}) + "\n")
             sys.stdout.flush()
