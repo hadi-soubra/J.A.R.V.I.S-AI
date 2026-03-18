@@ -37,10 +37,29 @@ def main():
     voices_path = sys.argv[2]
 
     try:
-        os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
+        # Force GPU provider by default.
+        # Set TTS_STRICT_GPU=1 to make CUDA mandatory (no fallback).
+        strict_gpu = os.environ.get("TTS_STRICT_GPU", "").strip() in ("1", "true", "True", "YES", "yes")
+        if "ONNX_PROVIDER" not in os.environ:
+            os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
         from kokoro_onnx import Kokoro
         import numpy as np
-        kokoro = Kokoro(model_path, voices_path)
+        try:
+            kokoro = Kokoro(model_path, voices_path)
+        except Exception:
+            if strict_gpu and os.environ.get("ONNX_PROVIDER") == "CUDAExecutionProvider":
+                raise
+            # Fallbacks (Windows often has DirectML available; CPU always should work).
+            kokoro = None
+            for provider in ("DmlExecutionProvider", "CPUExecutionProvider"):
+                os.environ["ONNX_PROVIDER"] = provider
+                try:
+                    kokoro = Kokoro(model_path, voices_path)
+                    break
+                except Exception:
+                    kokoro = None
+            if kokoro is None:
+                raise
         emit({"status":"ready"})
     except Exception as e:
         emit({"status":"error","message":str(e)})
