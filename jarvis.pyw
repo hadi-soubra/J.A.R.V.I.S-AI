@@ -4,7 +4,7 @@ pip install PyQt6 faster-whisper pyaudio kokoro-onnx sounddevice keyboard numpy
 """
 
 import sys, os, json, time, socket, subprocess, threading, base64, datetime, uuid, re
-import urllib.request, urllib.error, urllib.parse, io, wave, tempfile, webbrowser
+import urllib.request, urllib.error, urllib.parse, io, wave, tempfile
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
@@ -35,7 +35,7 @@ def _load_api_key():
     key_file = os.path.join(DATA_DIR, "api_key.txt")
     if os.path.exists(key_file):
         return open(key_file, encoding="utf-8").read().strip()
-    return "YOUR_API_KEY_HERE"
+    return "NO_KEY"
 ANTHROPIC_API_KEY = _load_api_key()
 MAX_HISTORY       = 40
 
@@ -62,21 +62,7 @@ PDF_EXT = ".pdf"
 JARVIS_SYSTEM = (
     "You are J.A.R.V.I.S (Just A Rather Very Intelligent System), "
     "the personal AI assistant. Be concise, direct, and highly capable. "
-    "Address the user as 'sir' occasionally. No unnecessary preamble.\n\n"
-    "You can control the PC using special command tags in your response.\n\n"
-    "AVAILABLE COMMANDS:\n"
-    "[RUN: appname] - launch an app. Apps: zen, spotify, vscode, explorer, outlook, bambu, blender, tlauncher, steam, epicgames, rdr2, sekiro, breadandfred, minecraft, rocketleague\n"
-    "[WEB: query or url] - open browser with Google search or URL\n"
-    "[INFO: system] - get live CPU, RAM, battery, disk stats\n"
-    "[CMD: shutdown] - shutdown the PC (asks confirmation)\n"
-    "[CMD: restart] - restart the PC (asks confirmation)\n"
-    "[CMD: sleep] - put PC to sleep\n"
-    "[CMD: lock] - lock the screen\n"
-    "[CMD: high_performance] - High Performance power plan (gaming)\n"
-    "[CMD: balanced] - Balanced power plan (normal use)\n"
-    "[FILE: open, filename] - find and open a file\n"
-    "[FILE: folder, name] - open a folder in Explorer\n"
-    "Only use commands when user clearly wants an action. Never use tags in hypothetical responses."
+    "Address the user as 'sir' occasionally. No unnecessary preamble."
 )
 
 # The greeting shown (and spoken) when JARVIS starts or a new chat is opened.
@@ -96,7 +82,7 @@ THINK_FG  = "#1e6e8a"; INPUT_BG= "#040d15"; TEXTAREA = "#051828"
 ACCENT    = "#00d4ff"; ACCDIM  = "#005566"; TEXT     = "#a8f0ff"
 TEXTMUT   = "#1a5060"; TEXTDIM = "#0e3040"; ERR      = "#ff4444"
 OK_COL    = "#00ffaa"; WARN    = "#ffaa00"; STATFG   = "#00aacc"
-BORDER    = "#0a3a4a"; CLAUDE_COL = "#a855f7"
+BORDER    = "#0a3a4a"; CLAUDE_COL = "#C15F3C"; LOCAL_COL = "#a855f7"
 
 COMBO_SS = lambda color: f"""
     QComboBox{{background:#000d14;color:{color};border:1px solid {ACCDIM};
@@ -231,22 +217,6 @@ def tcp_up(timeout=2):
         s.close(); return True
     except OSError: return False
 
-def start_ollama():
-    try:
-        kw={"stdout":subprocess.DEVNULL,"stderr":subprocess.DEVNULL}
-        if sys.platform=="win32":
-            kw["creationflags"]=subprocess.CREATE_NO_WINDOW|subprocess.DETACHED_PROCESS
-        subprocess.Popen(["ollama","serve"],**kw); return True
-    except FileNotFoundError: return False
-
-def wait_ollama(max_wait=20):
-    if tcp_up(1): return True,"ready"
-    if not start_ollama(): return False,"Ollama not found"
-    for _ in range(max_wait):
-        time.sleep(1)
-        if tcp_up(1): return True,"started"
-    return False,f"No response after {max_wait}s"
-
 def stream_ollama(model,messages,think):
     payload=json.dumps({"model":model,"messages":messages,"stream":True,
                         "think":think,"options":{"temperature":0.7}}).encode()
@@ -318,17 +288,17 @@ class TTSEngine:
             line = self._proc.stdout.readline()
             msg  = json.loads(line)
             if msg.get("status") == "ready":
-                self._set_status("◈  TTS READY", "ok")
+                self._set_status("TTS READY", "ok")
                 print("[TTS] Kokoro worker ready")
                 self._ready.set()
                 threading.Thread(target=self._reader, daemon=True).start()
             else:
                 print(f"[TTS] Worker failed: {msg.get('message','')}")
-                self._set_status("⚠  TTS FAILED", "err")
+                self._set_status("⚠ TTS FAILED", "err")
                 self._ready.set()
         except Exception as e:
             print(f"[TTS] Failed to start worker: {e}")
-            self._set_status("⚠  TTS FAILED", "err")
+            self._set_status("⚠ TTS FAILED", "err")
             self._ready.set()
 
     def _reader(self):
@@ -414,8 +384,13 @@ class STTProcess:
                       stderr=subprocess.PIPE, text=True, bufsize=1)
             if sys.platform == "win32":
                 kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            # Default STT to CPU for compatibility; user can override via env vars.
+            env = os.environ.copy()
+            env.setdefault("JARVIS_STT_DEVICE", "cpu")
+            env.setdefault("JARVIS_STT_COMPUTE", "int8")
+            env.pop("JARVIS_STT_STRICT_GPU", None)
             self._proc = subprocess.Popen(
-                [sys.executable, STT_WORKER_SCRIPT, STT_MODEL_DIR], **kw)
+                [sys.executable, STT_WORKER_SCRIPT, STT_MODEL_DIR], env=env, **kw)
             # Wait for "ready" line
             line = self._proc.stdout.readline()
             msg  = json.loads(line)
@@ -423,7 +398,7 @@ class STTProcess:
                 err_out = self._proc.stderr.read()
                 print(f"[STT] Worker failed to load: {msg['error']}")
                 if err_out: print(f"[STT] stderr: {err_out[:500]}")
-                if self._status_cb: self._status_cb("⚠  STT LOAD FAILED", "err")
+                if self._status_cb: self._status_cb("⚠ STT LOAD FAILED", "err")
             else:
                 print("[STT] Subprocess worker ready")
                 if self._status_cb: self._status_cb("◈  STT READY", "ok")
@@ -496,7 +471,7 @@ class StreamWorker(QThread):
                         tps=ec/(ed/1e9) if ed>0 else tok/max(time.time()-t0,.001)
                         self.stats.emit(tps,ec,time.time()-t0)
             else:
-                if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY.strip() in ("","YOUR_API_KEY_HERE"):
+                if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY.strip() in ("","NO_KEY"):
                     raise ValueError("Anthropic API key not set.")
                 for event in stream_anthropic(model,self.messages,self.system_text,ANTHROPIC_API_KEY):
                     if self.stop_evt.is_set(): break
@@ -516,192 +491,40 @@ class StreamWorker(QThread):
             if sentence_buf.strip() and not self.stop_evt.is_set():
                 self.sentence.emit(sentence_buf.strip())
         except Exception as e:
-            self.finished.emit("⚠  "+str(e),False); return
+            self.finished.emit("⚠ "+str(e),False); return
         self.finished.emit(full,self.stop_evt.is_set())
 
     def _flush_sentences(self, buf):
-        # Split on sentence-ending punctuation, keeping delimiter attached to the left part.
-        # e.g. "Hello sir. How are you" → ["Hello sir.", "How are you"]
-        parts = re.split(r'(?<=[.!?]) +', buf)  # space only, not \n
-        # Only emit sentences we're sure are complete — i.e. NOT the last fragment,
-        # which may still be mid-sentence. Requires at least 2 parts.
-        if len(parts) < 2:
-            return buf  # nothing confirmed complete yet, keep buffering
-        for sentence in parts[:-1]:
-            s = sentence.strip()
-            if s:
+        # Emit "sentences" to drive TTS.
+        #
+        # Primary rule: split on .!? followed by any whitespace (space/newline).
+        # Fallback rule: if there's no sentence punctuation yet, allow newline-delimited
+        # segments (poems/rap/bullets) to count as a "sentence" once a newline arrives.
+        parts = re.split(r'(?<=[.!?])\s+', buf)  # includes \n
+        if len(parts) >= 2:
+            for sentence in parts[:-1]:
+                s = sentence.strip()
+                if s:
+                    self.sentence.emit(s)
+            return parts[-1]
+
+        # No .!? boundary yet — try newline as a boundary for speech-friendly layouts.
+        if "\n" in buf:
+            head, tail = buf.split("\n", 1)
+            s = head.strip()
+            # Avoid emitting tiny fragments; rap/poems often have short lines, so keep low.
+            if len(s) >= 8:
                 self.sentence.emit(s)
-        return parts[-1]  # trailing incomplete fragment, keep for next chunk
+                return tail
+        return buf
 
-# ── Ollama Init Worker ────────────────────────────────────────────────────────
-# Runs wait_ollama() on a background thread at startup so the UI never blocks.
-# Emits done(ok, message) when Ollama is confirmed up or timed out.
-class OllamaInitWorker(QThread):
+# ── Ollama Init Ping ──────────────────────────────────────────────────────────
+# Simple background thread — pings Ollama once at startup (VBS already started it).
+class OllamaPingWorker(QThread):
     done=pyqtSignal(bool,str)
-    def run(self): self.done.emit(*wait_ollama())
-
-# ── PC Control — app launcher & tools ─────────────────────────────────────────
-# Edit this dictionary to add/remove apps. Key = name to say, value = path or URI.
-APPS = {
-    # Browsers & productivity
-    "zen":              r"C:\Program Files\Zen Browser\zen.exe",
-    "browser":          r"C:\Program Files\Zen Browser\zen.exe",
-    "spotify":          r"C:\Users\Hadi\AppData\Roaming\Spotify\Spotify.exe",
-    "music":          r"C:\Users\Hadi\AppData\Roaming\Spotify\Spotify.exe",
-    "vscode":           r"C:\Users\Hadi\AppData\Local\Programs\Microsoft VS Code\Code.exe",
-    "code":             r"C:\Users\Hadi\AppData\Local\Programs\Microsoft VS Code\Code.exe",
-    "explorer":         "explorer.exe",
-    "files":            "explorer.exe",
-    "outlook":          r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
-    "email":          r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE",
-    # Creative
-    "bambu":            r"C:\Program Files\Bambu Studio\bambu-studio.exe",
-    "bamboo":           r"C:\Program Files\Bambu Studio\bambu-studio.exe",
-    "slicer":           r"C:\Program Files\Bambu Studio\bambu-studio.exe",
-    "blender":          r"C:\Program Files\Blender Foundation\Blender 5.0\blender-launcher.exe",
-    # Launchers
-    "steam":            r"C:\Program Files (x86)\Steam\steam.exe",
-    "epicgames":        r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
-    "epic":             r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
-    # Games
-    "rdr2":             "steam://rungameid/1174180",
-    "red dead":         "steam://rungameid/1174180",
-    "rdr":              "steam://rungameid/1174180",
-    "sekiro":           "steam://rungameid/814380",
-    "rocketleague":     "com.epicgames.launcher://apps/9773aa1aa54f4f7b80e44bef04986cea%3A530145df28a24424923f5828cc9031a1%3ASugar?action=launch&silent=true",
-    "rocket league":    "com.epicgames.launcher://apps/9773aa1aa54f4f7b80e44bef04986cea%3A530145df28a24424923f5828cc9031a1%3ASugar?action=launch&silent=true",
-    "breadandfred":     r"C:\Bread.and.Fred.v2025.03.07(1)\Bread.and.Fred.v2025.03.07\Bread.and.Fred.v2025.03.07\Bread&Fred.exe",
-    "bread and fred":   r"C:\Bread.and.Fred.v2025.03.07(1)\Bread.and.Fred.v2025.03.07\Bread.and.Fred.v2025.03.07\Bread&Fred.exe",
-    "tlauncher":        r"C:\Users\Hadi\AppData\Roaming\.minecraft\TLauncher.exe",
-    "minecraft":        r"C:\Users\Hadi\AppData\Roaming\.minecraft\TLauncher.exe",
-}
-
-# Folders JARVIS is allowed to search for files in
-ALLOWED_DIRS = [
-    os.path.expanduser("~\\Desktop"),
-    os.path.expanduser("~\\Documents"),
-    os.path.expanduser("~\\Downloads"),
-]
-
-def _get_system_info():
-    """Return formatted live system stats via psutil."""
-    try:
-        import psutil
-        cpu  = psutil.cpu_percent(interval=0.5)
-        ram  = psutil.virtual_memory()
-        disk = psutil.disk_usage('C:\\')
-        bat  = psutil.sensors_battery()
-        lines = [
-            f"CPU:     {cpu:.1f}%",
-            f"RAM:     {ram.percent:.1f}%  ({ram.used//1024**3:.1f} GB / {ram.total//1024**3:.1f} GB)",
-            f"Disk C:  {disk.percent:.1f}%  ({disk.free//1024**3:.1f} GB free)",
-        ]
-        if bat:
-            status = "Charging" if bat.power_plugged else "Discharging"
-            lines.append(f"Battery: {bat.percent:.0f}%  ({status})")
-        return "\n".join(lines)
-    except ImportError:
-        return "psutil not installed. Run: pip install psutil"
-    except Exception as e:
-        return f"Could not get system info: {e}"
-
-def _find_file(name):
-    """Search ALLOWED_DIRS for a file matching name (case-insensitive)."""
-    name_lower = name.lower()
-    for root_dir in ALLOWED_DIRS:
-        for dirpath, _, files in os.walk(root_dir):
-            for f in files:
-                if name_lower in f.lower():
-                    return os.path.join(dirpath, f)
-    return None
-
-def execute_pc_command(tag, arg, confirm_cb=None):
-    """Route a parsed [TAG: arg] to the correct PC action. Returns result string."""
-    tag = tag.upper().strip()
-    arg = arg.strip()
-
-    if tag == "RUN":
-        key = arg.lower().strip()
-        path = APPS.get(key)
-        if not path:
-            for k, v in APPS.items():
-                if k in key or key in k:
-                    path = v; break
-        if path:
-            try:
-                if any(path.startswith(p) for p in ("steam://", "com.epicgames.", "http")):
-                    webbrowser.open(path)
-                else:
-                    kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform=="win32" else {}
-                    subprocess.Popen([path], **kw)
-                return f"Launched {arg}."
-            except Exception as e:
-                return f"Failed to launch {arg}: {e}"
-        return f"App '{arg}' not found. Add it to the APPS dictionary in jarvis.pyw."
-
-    elif tag == "WEB":
-        try:
-            url = arg if arg.startswith("http") else f"https://www.google.com/search?q={urllib.parse.quote(arg)}"
-            webbrowser.open(url)
-            return f"Opened browser: {arg}"
-        except Exception as e:
-            return f"Browser failed: {e}"
-
-    elif tag == "INFO":
-        return _get_system_info()
-
-    elif tag == "CMD":
-        cmd = arg.lower().strip()
-        if cmd in ("shutdown", "restart"):
-            if confirm_cb and not confirm_cb(f"Are you sure you want to {cmd}?"):
-                return f"{cmd.capitalize()} cancelled."
-        try:
-            if   cmd == "shutdown":
-                subprocess.run(["shutdown", "/s", "/t", "10"]); return "Shutting down in 10 seconds."
-            elif cmd == "restart":
-                subprocess.run(["shutdown", "/r", "/t", "10"]); return "Restarting in 10 seconds."
-            elif cmd == "sleep":
-                subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0"]); return "Going to sleep."
-            elif cmd == "lock":
-                subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"]); return "Screen locked."
-            elif cmd == "high_performance":
-                subprocess.run(["powercfg", "/s", "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"], shell=True)
-                return "Switched to High Performance power plan."
-            elif cmd == "balanced":
-                subprocess.run(["powercfg", "/s", "381b4222-f694-41f0-9685-ff5bb260df2e"], shell=True)
-                return "Switched to Balanced power plan."
-            else:
-                return f"Unknown command: {cmd}"
-        except Exception as e:
-            return f"Command failed: {e}"
-
-    elif tag == "FILE":
-        parts = arg.split(",", 1)
-        op    = parts[0].strip().lower()
-        param = parts[1].strip() if len(parts) > 1 else ""
-        if op == "open":
-            path = _find_file(param)
-            if path:
-                try: os.startfile(path); return f"Opened: {path}"
-                except Exception as e: return f"Could not open: {e}"
-            return f"File '{param}' not found in Desktop, Documents, or Downloads."
-        elif op == "folder":
-            folders = {
-                "desktop":   os.path.expanduser("~\\Desktop"),
-                "documents": os.path.expanduser("~\\Documents"),
-                "downloads": os.path.expanduser("~\\Downloads"),
-                "music":     os.path.expanduser("~\\Music"),
-                "pictures":  os.path.expanduser("~\\Pictures"),
-                "videos":    os.path.expanduser("~\\Videos"),
-            }
-            path = folders.get(param.lower(), param)
-            try: subprocess.Popen(["explorer.exe", path]); return f"Opened folder: {path}"
-            except Exception as e: return f"Could not open folder: {e}"
-    return None
-
-def parse_commands(text):
-    """Extract all [TAG: arg] command tags from model response text."""
-    return re.findall(r'\[([A-Z]+):\s*([^\]]+)\]', text, re.IGNORECASE)
+    def run(self):
+        ok=tcp_up(3)
+        self.done.emit(ok, "ready" if ok else "offline")
 
 # ── UI helpers ───────────────────────────────────────────────────────────────
 # Small factory functions used throughout the UI to keep widget creation concise.─
@@ -766,13 +589,13 @@ class PromptBox(QTextEdit):
             self.setStyleSheet(
                 f"QTextEdit{{background:#1a0505;color:{ERR};border:1px solid {ERR};"
                 f"padding:8px 10px;selection-background-color:{ACCDIM};}}")
-            self.setPlainText("  ●  RECORDING…")
+            self.setPlainText(" ● RECORDING…")
             self.setFixedHeight(PROMPT_MIN_H)
         elif state == "transcribing":
             self.setStyleSheet(
                 f"QTextEdit{{background:#0d0d05;color:{WARN};border:1px solid {WARN};"
                 f"padding:8px 10px;selection-background-color:{ACCDIM};}}")
-            self.setPlainText("  ◈  TRANSCRIBING…")
+            self.setPlainText(" ● TRANSCRIBING…")
             self.setFixedHeight(PROMPT_MIN_H)
         else:  # idle — restore
             self._stt_active = False
@@ -1021,8 +844,7 @@ class AIMessage(QWidget):
     _THROAT_FRAMES = [
         "  CLEARING THROAT  ●○○",
         "  CLEARING THROAT  ○●○",
-        "  CLEARING THROAT  ○○●",
-        "  CLEARING THROAT  ○●○",
+        "  CLEARING THROAT  ○○●"
     ]
 
     def __init__(self,show_think=True,parent=None):
@@ -1037,7 +859,7 @@ class AIMessage(QWidget):
         self.resp.set_plain("▌")
         copy_row=QWidget(); copy_row.setStyleSheet(f"background:{BG};")
         cr=QHBoxLayout(copy_row); cr.setContentsMargins(0,0,0,4)
-        self.copy_btn=QPushButton("[ COPY ]"); self.copy_btn.setFont(make_font(size=8))
+        self.copy_btn=QPushButton("[ COPY ⿻]"); self.copy_btn.setFont(make_font(size=8))
         self.copy_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{TEXTMUT};"
                                     f"border:none;padding:2px 6px;}}"
                                     f"QPushButton:hover{{color:{ACCENT};}}")
@@ -1094,7 +916,7 @@ class AIMessage(QWidget):
         self.copy_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{OK_COL};border:none;padding:2px 6px;}}")
         QTimer.singleShot(1800,self._reset_copy)
     def _reset_copy(self):
-        self.copy_btn.setText("[ COPY ]")
+        self.copy_btn.setText("[ COPY ⿻ ]")
         self.copy_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{TEXTMUT};"
                                     f"border:none;padding:2px 6px;}}"
                                     f"QPushButton:hover{{color:{ACCENT};}}")
@@ -1140,7 +962,7 @@ class BootWidget(QWidget):
         ("◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈", ACCENT),
         ("", TEXT),
         ("  > INITIALIZING NEURONS........", OK_COL),
-        ("  > LOADING ALL MODLES.......", OK_COL),
+        ("  > LOADING ALL MODELS.......", OK_COL),
         ("  > CALIBRATING RESPONSE STYLE......", OK_COL),
         ("", TEXT),
         ("  [ WAITING FOR SYSTEM CONFIRMATION ]", WARN),
@@ -1156,7 +978,12 @@ class BootWidget(QWidget):
         self._prebaked_durations = {}
         # Which > lines exist (by index in LINES)
         self._spoken_indices = [i for i,(txt,_) in enumerate(self.LINES) if txt.strip().startswith(">")]
-        self._prebake_done   = threading.Event()
+
+        # Readiness flags — typewriter starts once ALL are True
+        self._ollama_ready      = False
+        self._tts_ready         = False   # True = loaded OK or confirmed failed
+        self._stt_ready         = False   # True = loaded OK or confirmed failed
+        self._animation_started = False   # guard — _start_animation fires exactly once
 
         self.setStyleSheet(f"background:{BG};")
         layout = QVBoxLayout(self); layout.setContentsMargins(20,40,20,20); layout.setSpacing(0)
@@ -1167,7 +994,6 @@ class BootWidget(QWidget):
             layout.addWidget(l); self._labels.append((l, text, color))
         layout.addStretch()
 
-        self._ollama_ready  = False
         self._line_idx      = 0
         self._char_idx      = 0
         self._dot_count     = 0
@@ -1182,20 +1008,25 @@ class BootWidget(QWidget):
             layout.insertWidget(layout.count()-1, fl)
             self._filler_labels.append(fl)
 
+        # Matrix animation starts immediately — no waiting for TTS/STT
+        self._matrix_timer = QTimer(self)
+        self._matrix_timer.timeout.connect(self._matrix_step)
+        self._matrix_timer.start(150)
+
         if tts_on:
-            self._matrix_timer = QTimer(self)
-            self._matrix_timer.timeout.connect(self._matrix_step)
-            self._matrix_timer.start(150)
+            # Prebake boot lines in background while matrix plays
             threading.Thread(target=self._prebake_all, daemon=True).start()
         else:
-            self._type_timer.start(self._default_interval)
+            # TTS disabled — mark as ready immediately so it doesn't block
+            self._tts_ready = True
 
     _MATRIX_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*><[]{}|◈▌░▒▓"
 
     def _matrix_step(self):
         import random
         chars = self._MATRIX_CHARS
-        all_labels = [(l, full) for l, full, color in self._labels] +                      [(fl, "") for fl in self._filler_labels]
+        all_labels = [(l, full) for l, full, color in self._labels] + \
+                     [(fl, "") for fl in self._filler_labels]
         for l, full in all_labels:
             length = len(full) if full else random.randint(20, 40)
             rand_text = "".join(random.choice(chars) for _ in range(length))
@@ -1203,44 +1034,64 @@ class BootWidget(QWidget):
             l.setStyleSheet(f"color:{OK_COL};background:transparent;padding:1px 0;")
 
     def _prebake_all(self):
-        """Background: wait for TTS ready, prebake all spoken lines, then start animation."""
+        """Background: wait for TTS ready, prebake all spoken lines, signal done."""
         for _ in range(300):
             if _tts and _tts.is_ready(): break
             time.sleep(0.1)
-        if not (_tts and _tts.is_ready()):
-            # TTS failed — start without audio
+
+        tts_ok = _tts and _tts.is_ready()
+
+        if tts_ok:
+            # Play cough sound while matrix is still running
+            def _play_cough():
+                try:
+                    import sounddevice as sd
+                    import numpy as np
+                    import wave as _wave
+                    cough_path = os.path.join(VOICE_DIR, "cough.wav")
+                    if not os.path.exists(cough_path): return
+                    with _wave.open(cough_path, 'rb') as wf:
+                        sr  = wf.getframerate()
+                        ch  = wf.getnchannels()
+                        raw = wf.readframes(wf.getnframes())
+                    pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, ch)
+                    sd.play(pcm, samplerate=sr, blocking=True)
+                except Exception as e:
+                    print(f"[COUGH] {e}")
+            threading.Thread(target=_play_cough, daemon=True).start()
+            # Request prebake for each spoken line
+            for idx in self._spoken_indices:
+                txt, _ = self.LINES[idx]
+                spoken = txt.strip().lstrip(">").strip().rstrip(".").strip()
+                if spoken:
+                    _tts.prebake(idx, spoken, self._tts_voice)
+            # Wait until all prebakes are confirmed
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if len(self._prebaked_durations) >= len(self._spoken_indices):
+                    break
+                time.sleep(0.05)
+
+        # Mark TTS as done (ready or failed) and check if we can start
+        self._tts_ready = True
+        self._check_start_animation()
+
+    def _check_start_animation(self):
+        """Start typewriter only when TTS and STT are both done loading."""
+        if self._animation_started: return
+        if self._tts_ready and self._stt_ready:
+            self._animation_started = True
             QTimer.singleShot(0, self._start_animation)
-            return
-        # Play cough sound at start of matrix animation
-        def _play_cough():
-            try:
-                import sounddevice as sd
-                import numpy as np
-                import wave as _wave
-                cough_path = os.path.join(VOICE_DIR, "cough.wav")
-                if not os.path.exists(cough_path): return
-                with _wave.open(cough_path, 'rb') as wf:
-                    sr  = wf.getframerate()
-                    ch  = wf.getnchannels()
-                    raw = wf.readframes(wf.getnframes())
-                pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, ch)
-                sd.play(pcm, samplerate=sr, blocking=True)
-            except Exception as e:
-                print(f"[COUGH] {e}")
-        threading.Thread(target=_play_cough, daemon=True).start()
-        # Request prebake for each spoken line
-        for idx in self._spoken_indices:
-            txt, _ = self.LINES[idx]
-            spoken = txt.strip().lstrip(">").strip().rstrip(".").strip()
-            if spoken:
-                _tts.prebake(idx, spoken, self._tts_voice)
-        # Wait until all prebakes are confirmed (prebake_cb sets _prebaked_durations)
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            if len(self._prebaked_durations) >= len(self._spoken_indices):
-                break
-            time.sleep(0.05)
-        QTimer.singleShot(0, self._start_animation)
+
+    def set_tts_ready(self):
+        """Called by MainWindow when TTS finishes loading (success or fail)."""
+        self._tts_ready = True
+        self._check_start_animation()
+
+    def set_stt_ready(self):
+        """Called by MainWindow when STT finishes loading (success or fail)."""
+        self._stt_ready = True
+        self._check_start_animation()
 
     def on_prebaked(self, item_id, duration_ms):
         """Called from MainWindow when worker confirms a prebake is ready."""
@@ -1289,7 +1140,7 @@ class BootWidget(QWidget):
         if self._ollama_ready:
             self._dot_timer.stop()
             l, _, _ = self._labels[-1]
-            l.setText("  [ ◉  ALL SYSTEMS ONLINE ]")
+            l.setText("  [ ALL SYSTEMS ONLINE ]")
             l.setStyleSheet(f"color:{OK_COL};background:transparent;padding:1px 0;")
             QTimer.singleShot(800, self.boot_done.emit)
         else:
@@ -1410,10 +1261,14 @@ class MainWindow(QMainWindow):
     _sig_stt_done   = pyqtSignal(str)
     _sig_stt_error  = pyqtSignal(str)
     _sig_status     = pyqtSignal(str,str)
+    _sig_reset_status = pyqtSignal()             # thread-safe call to _reset_status
+    _sig_tts_loaded   = pyqtSignal()             # TTS finished loading (ok or fail)
+    _sig_stt_loaded   = pyqtSignal()             # STT finished loading (ok or fail)
     _sig_greet_ready = pyqtSignal()            # start greeting typewriter
     _sig_prebaked    = pyqtSignal(int, int)    # (id, duration_ms) prebake ready
     _sig_unleash     = pyqtSignal(str)         # flush buffered text + start voice
     _sig_toggle_win  = pyqtSignal()            # raise/minimize window from hotkey thread
+    _sig_abort_req   = pyqtSignal()            # abort current response (from hotkey thread)
 
     def __init__(self):
         super().__init__()
@@ -1429,6 +1284,11 @@ class MainWindow(QMainWindow):
         self._transcribing=False
         self._input_locked=False
         self._hotkey_thread=None
+        self._pending_tts_sentences = []
+        self._reveal_timer = None
+        self._reveal_active = False
+        self._reveal_pos = 0
+        self._latest_text = ""
 
         sett=load_settings()
         self.provider   =sett.get("provider",DEFAULT_PROVIDER)
@@ -1457,6 +1317,9 @@ class MainWindow(QMainWindow):
         def _tts_status(msg, level="warn"):
             color = {"ok":OK_COL,"warn":WARN,"err":ERR}.get(level, WARN)
             self._sig_status.emit(msg, color)
+            self._sig_reset_status.emit()
+            # Notify boot widget that TTS is done loading (success or fail)
+            self._sig_tts_loaded.emit()
         def _tts_prebake_cb(item_id, duration_ms):
             self._sig_prebaked.emit(item_id, duration_ms)
         _tts = TTSEngine(status_cb=_tts_status, prebake_cb=_tts_prebake_cb)
@@ -1467,9 +1330,13 @@ class MainWindow(QMainWindow):
         def _stt_status(msg, level="warn"):
             color={"ok":OK_COL,"warn":WARN,"err":ERR}.get(level,WARN)
             self._sig_status.emit(msg,color)
+            self._sig_reset_status.emit()
+            # Notify boot widget that STT is done loading (success or fail)
+            self._sig_stt_loaded.emit()
         _stt_proc = STTProcess(status_cb=_stt_status)
 
         self._sig_toggle_win.connect(self._toggle_window)
+        self._sig_abort_req.connect(self._abort)
         self._sig_greet_ready.connect(self._on_greet_ready)
         self._sig_prebaked.connect(self._on_prebaked)
         self._sig_unleash.connect(self._on_unleash)
@@ -1482,8 +1349,11 @@ class MainWindow(QMainWindow):
         self._sig_stt_done.connect(self._on_stt_done)
         self._sig_stt_error.connect(self._on_stt_error)
         self._sig_status.connect(self._on_status)
+        self._sig_reset_status.connect(lambda: QTimer.singleShot(1500, self._reset_status))
+        self._sig_tts_loaded.connect(self._on_tts_loaded)
+        self._sig_stt_loaded.connect(self._on_stt_loaded)
 
-        self._ollama_worker=OllamaInitWorker()
+        self._ollama_worker=OllamaPingWorker()
         self._ollama_worker.done.connect(self._sig_ollama_done)
         self._ollama_worker.start()
 
@@ -1521,7 +1391,24 @@ class MainWindow(QMainWindow):
                      "tts_on":self.tts_on,"tts_voice":self.tts_voice,
                      "last_conv_id":self._conv_id})
         save_settings(sett)
-        if _tts: _tts.stop()
+        # TTS: stop playback and kill worker subprocess if still running
+        if _tts:
+            try:
+                _tts.stop()
+            except Exception:
+                pass
+            try:
+                if getattr(_tts, "_proc", None) is not None and _tts._proc.poll() is None:
+                    _tts._proc.terminate()
+            except Exception:
+                pass
+        # STT: explicitly terminate worker subprocess so it can't linger
+        global _stt_proc
+        try:
+            if _stt_proc and getattr(_stt_proc, "_proc", None) is not None and _stt_proc._proc.poll() is None:
+                _stt_proc._proc.terminate()
+        except Exception:
+            pass
         # Stop keyboard hotkey
         try:
             import keyboard
@@ -1543,8 +1430,8 @@ class MainWindow(QMainWindow):
         title.setStyleSheet(f"color:{ACCENT};background:transparent;")
         tbl.addWidget(title); tbl.addStretch()
         for text,tip,cb,hover in [
-            ("[ MEM ]","Memory",self._show_memory,CLAUDE_COL),
-            ("[ HIST ]","History",self._show_history,ACCENT),
+            ("[ MEM ]","Memory",self._show_memory,WARN),
+            ("[ HIST ]","History",self._show_history,WARN),
         ]:
             b=QPushButton(text); b.setFont(make_font(bold=True,size=8))
             b.setFixedHeight(44); b.setToolTip(tip)
@@ -1553,7 +1440,7 @@ class MainWindow(QMainWindow):
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             b.clicked.connect(cb); tbl.addWidget(b)
         for text,tip,slot,hover in [("[ — ]","Minimize",self.showMinimized,ACCDIM),
-                                     ("[ × ]","Close",self.close,"#4a1010")]:
+                                     ("[ ⏻ ]","Close",self.close,"#4a1010")]:
             b=QPushButton(text); b.setFont(make_font(bold=True,size=9))
             b.setFixedSize(46,44); b.setToolTip(tip)
             b.setStyleSheet(f"QPushButton{{background:transparent;color:{TEXTMUT};border:none;}}"
@@ -1562,11 +1449,11 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot); tbl.addWidget(b)
         main.addWidget(tb)
 
-        # ── Controls bar — model combo + ⚙ settings button
+        # ── Controls bar — model combo + ≡ settings button
         cb=QWidget(); cb.setFixedHeight(34); cb.setStyleSheet(f"background:{CTRLBAR};")
         cbl=QHBoxLayout(cb); cbl.setContentsMargins(10,0,10,0); cbl.setSpacing(8)
 
-        cbl.addWidget(lbl("model:",TEXTMUT,make_font(size=8)))
+        cbl.addWidget(lbl("Model:",TEXTMUT,make_font(size=8)))
         self.model_combo=QComboBox(); self.model_combo.addItems(PROVIDERS.keys())
         self.model_combo.setFont(make_font(bold=True,size=8))
         self.model_combo.setStyleSheet(COMBO_SS(ACCENT))
@@ -1575,8 +1462,8 @@ class MainWindow(QMainWindow):
 
         cbl.addStretch()
 
-        # ⚙ settings button — opens QMenu dropdown
-        self.settings_btn=QPushButton("⚙"); self.settings_btn.setFont(make_font(bold=True,size=11))
+        # ≡ settings button — opens QMenu dropdown
+        self.settings_btn=QPushButton("≡"); self.settings_btn.setFont(make_font(bold=True,size=11))
         self.settings_btn.setFixedSize(34,26)
         self.settings_btn.setStyleSheet(
             f"QPushButton{{background:#000d14;color:{ACCENT};border:1px solid {ACCDIM};padding:0;}}"
@@ -1597,7 +1484,7 @@ class MainWindow(QMainWindow):
             vl.setFont(make_font("Courier New",8)); vl.setStyleSheet(f"color:{STATFG};background:transparent;")
             sbl.addWidget(vl); sbl.addSpacing(6)
         sbl.addStretch()
-        self.status_lbl=QLabel("◉  CONNECTING"); self.status_lbl.setFont(make_font("Courier New",8))
+        self.status_lbl=QLabel("● CONNECTING"); self.status_lbl.setFont(make_font("Courier New",8))
         self.status_lbl.setStyleSheet(f"color:{WARN};background:transparent;"); sbl.addWidget(self.status_lbl)
         main.addWidget(sb); main.addWidget(hline())
 
@@ -1632,7 +1519,7 @@ class MainWindow(QMainWindow):
         self.chips_layout.addStretch(); self.chips_widget.setVisible(False)
         ial.addWidget(self.chips_widget)
         self.prompt=PromptBox()
-        self.prompt.setPlaceholderText("Enter message… /remember <fact>")
+        self.prompt.setPlaceholderText(">_Enter message… /remember <fact>")
         self.prompt.installEventFilter(self); ial.addWidget(self.prompt)
 
         br=QWidget(); br.setStyleSheet(f"background:{INPUT_BG};")
@@ -1675,7 +1562,7 @@ class MainWindow(QMainWindow):
         menu=QMenu(self); menu.setStyleSheet(MENU_SS)
         is_claude=PROVIDERS[self.provider]["type"]=="anthropic"
 
-        a1=menu.addAction(f"TTS:     {'ON ✓' if self.tts_on else 'OFF'}")
+        a1=menu.addAction(f"TTS:     {'ON' if self.tts_on else 'OFF'}")
         a1.setFont(make_font(size=9))
 
         a2=menu.addAction(f"VOICE:   {self.tts_voice}")
@@ -1683,18 +1570,18 @@ class MainWindow(QMainWindow):
 
         menu.addSeparator()
 
-        a3=menu.addAction(f"SCROLL:  {'ON ✓' if self.auto_scroll else 'OFF'}")
+        a3=menu.addAction(f"SCROLL:  {'ON' if self.auto_scroll else 'OFF'}")
         a3.setFont(make_font(size=9))
 
-        think_label=f"THINK:   {'N/A' if is_claude else ('ON ✓' if self.think_on else 'OFF')}"
+        think_label=f"THINK:   {'N/A' if is_claude else ('ON' if self.think_on else 'OFF')}"
         a4=menu.addAction(think_label)
         a4.setFont(make_font(size=9))
         if is_claude: a4.setEnabled(False)
 
-        a5=menu.addAction(f"ON TOP:  {'ON ✓' if self.stay_on_top else 'OFF'}")
+        a5=menu.addAction(f"ON TOP:  {'ON' if self.stay_on_top else 'OFF'}")
         a5.setFont(make_font(size=9))
 
-        # Show menu below the ⚙ button
+        # Show menu below the ≡ button
         pos=self.settings_btn.mapToGlobal(
             QPoint(0, self.settings_btn.height()))
         chosen=menu.exec(pos)
@@ -1734,18 +1621,55 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(msg)
         self.status_lbl.setStyleSheet(f"color:{color};background:transparent;")
 
+    def _reset_status(self):
+        """Revert status bar to the default state for the currently selected provider."""
+        prov = PROVIDERS.get(self.provider, {})
+        ptype = prov.get("type", "ollama")
+        if ptype == "anthropic":
+            key = ANTHROPIC_API_KEY.strip()
+            if not key or key == "NO_KEY":
+                self.status_lbl.setText(f"⚠ {self.provider} — NO API KEY")
+                self.status_lbl.setStyleSheet(f"color:{ERR};background:transparent;")
+            else:
+                self.status_lbl.setText(f"● {self.provider}")
+                self.status_lbl.setStyleSheet(f"color:{CLAUDE_COL};background:transparent;")
+        else:
+            # Run Ollama check on background thread to avoid blocking the UI
+            name = self.provider
+            def _check():
+                up = tcp_up(1)
+                if up:
+                    self._sig_status.emit(f"● {name}", LOCAL_COL)
+                else:
+                    self._sig_status.emit(f"⚠ {name} — OFFLINE", ERR)
+            threading.Thread(target=_check, daemon=True).start()
+
     # ── Ollama ────────────────────────────────────────────────────────────────
     def _on_ollama_done(self,ok,msg):
         if self.boot_widget: self.boot_widget.set_ollama_ready()
-        col=OK_COL if ok else ERR; txt="◉  ONLINE" if ok else "◉  OFFLINE"
-        self.status_lbl.setText(txt)
-        self.status_lbl.setStyleSheet(f"color:{col};background:transparent;")
         if ok: self._ping_timer.start(10000)
+        self._reset_status()
+
+    def _on_tts_loaded(self):
+        """TTS finished loading (success or fail) — notify boot widget."""
+        if self.boot_widget:
+            self.boot_widget.set_tts_ready()
+
+    def _on_stt_loaded(self):
+        """STT finished loading (success or fail) — notify boot widget."""
+        if self.boot_widget:
+            self.boot_widget.set_stt_ready()
 
     def _check_ollama(self):
-        up=tcp_up(2); col=OK_COL if up else ERR; txt="◉  ONLINE" if up else "◉  OFFLINE"
-        self.status_lbl.setText(txt)
-        self.status_lbl.setStyleSheet(f"color:{col};background:transparent;")
+        # Already on a background thread — check and emit via signal
+        name = self.provider
+        ptype = PROVIDERS.get(name, {}).get("type", "ollama")
+        if ptype == "ollama":
+            up = tcp_up(1)
+            if up:
+                self._sig_status.emit(f"● {name}", LOCAL_COL)
+            else:
+                self._sig_status.emit(f"● {name} — OFFLINE", ERR)
 
     def _ping(self):
         if PROVIDERS[self.provider]["type"]=="ollama":
@@ -1755,16 +1679,10 @@ class MainWindow(QMainWindow):
     def _set_provider(self,name):
         self.provider=name
         is_claude=PROVIDERS[name]["type"]=="anthropic"
-        col=CLAUDE_COL if is_claude else ACCENT
+        col=CLAUDE_COL if is_claude else LOCAL_COL
         self.model_combo.setStyleSheet(COMBO_SS(col))
         if is_claude:
-            key=ANTHROPIC_API_KEY.strip()
-            if not key or key=="YOUR_API_KEY_HERE":
-                self.status_lbl.setText("⚠  NO API KEY")
-                self.status_lbl.setStyleSheet(f"color:{ERR};background:transparent;")
-            else:
-                self.status_lbl.setText(f"◈  {name}")
-                self.status_lbl.setStyleSheet(f"color:{CLAUDE_COL};background:transparent;")
+            self._reset_status()
         else:
             threading.Thread(target=self._check_ollama,daemon=True).start()
 
@@ -1776,8 +1694,26 @@ class MainWindow(QMainWindow):
             self._greet_duration = duration_ms
             self._sig_greet_ready.emit()
         elif item_id == 100:
-            # First response sentence — unleash display and audio together
-            self._sig_unleash.emit(self._chunk_buffer)
+            # First response sentence.
+            #
+            # Normal path: unleash display + audio together.
+            # Edge case: if the model finishes streaming quickly, `_on_stream_done`
+            # can finalize and clear `_current_ai` before prebake completes. In that
+            # case, we still want to play the first sentence audio (and flush any
+            # queued sentences) even though there's nothing left to "unleash".
+            if self._stop_evt.is_set():
+                return
+            if self._current_ai and not self._tts_unleashed:
+                self._sig_unleash.emit(self._chunk_buffer)
+            else:
+                # UI already finalized (or TTS already unleashed) — just play audio.
+                try:
+                    if _tts and _tts.is_ready():
+                        _tts.play_prebaked(100)
+                        for s in self._pending_tts_sentences:
+                            _tts.speak(s, self.tts_voice)
+                finally:
+                    self._pending_tts_sentences = []
         elif self.boot_widget is not None:
             # Boot lines
             self.boot_widget.on_prebaked(item_id, duration_ms)
@@ -1938,8 +1874,16 @@ class MainWindow(QMainWindow):
             try:
                 import keyboard
                 keyboard.hook(_handle)
-                keyboard.add_hotkey("esc", lambda: _tts.stop() if _tts else None, suppress=False)
-                keyboard.add_hotkey("ctrl+alt+j", lambda: self._sig_toggle_win.emit(), suppress=False)
+                # Esc aborts: stop audio + stop stream + reset state
+                keyboard.add_hotkey("esc", lambda: self._sig_abort_req.emit(), suppress=True)
+                # Global toggle hotkey for JARVIS window.
+                # suppress=True prevents the Space character from being typed
+                # into whatever control currently has focus.
+                keyboard.add_hotkey(
+                    "ctrl+alt+space",
+                    lambda: self._sig_toggle_win.emit(),
+                    suppress=True,
+                )
                 keyboard.wait()
             except Exception as e:
                 print(f"[STT] keyboard hotkey failed: {e}")
@@ -1960,11 +1904,12 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self.activateWindow()
             self.raise_()
+            self.prompt.setFocus()
         else:
             self.showMinimized()
 
     def _set_mic_recording(self):
-        self.mic_btn.setText("[ ● ]")
+        self.mic_btn.setText("[ REC ]")
         self.mic_btn.setStyleSheet(
             f"QPushButton{{background:#3a0808;color:{ERR};border:none;padding:6px 10px;}}"
             f"QPushButton:hover{{background:#501010;}}")
@@ -1992,8 +1937,7 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self._transcribe,daemon=True).start()
         else:
             self.prompt.set_stt_state("idle")
-            self.status_lbl.setText("◈  NO AUDIO")
-            self.status_lbl.setStyleSheet(f"color:{WARN};background:transparent;")
+            self._reset_status()
 
     def _record_audio(self):
         try:
@@ -2029,25 +1973,21 @@ class MainWindow(QMainWindow):
         if text=="__STOP__": self._stop_recording(); return
         self._transcribing=False
         if text:
-            # Append transcribed text to whatever was in the box before recording
             combined = (self.prompt._saved_text + " " + text).strip()
             self.prompt._saved_text = combined
-            self.status_lbl.setText("◈  STT DONE")
-            self.status_lbl.setStyleSheet(f"color:{OK_COL};background:transparent;")
-        else:
-            self.status_lbl.setText("◈  NOTHING HEARD")
-            self.status_lbl.setStyleSheet(f"color:{WARN};background:transparent;")
         self.prompt.set_stt_state("idle")
+        self._reset_status()
 
     def _on_stt_error(self,err):
         print(f"[STT] Error: {err}")
         self._transcribing=False
         self.prompt.set_stt_state("idle")
-        self._sig_status.emit(f"⚠  STT: {err[:30]}", ERR)
+        self._reset_status()
 
     # ── TTS ───────────────────────────────────────────────────────────────────
     def _on_sentence(self, sentence):
         if not (self.tts_on and _tts and _tts.is_ready()): return
+        if self._stop_evt.is_set(): return
         clean = re.sub(r'[*_`#\[\]()]', '', sentence).replace('\n', ' ').strip()
         clean = re.sub(r' +', ' ', clean)  # collapse multiple spaces
         if not clean: return
@@ -2056,7 +1996,12 @@ class MainWindow(QMainWindow):
             self._first_sentence_sent = True
             _tts.prebake(100, clean, self.tts_voice)
         else:
-            _tts.speak(clean, self.tts_voice)
+            # While we are still waiting for the first sentence to prebake/unleash,
+            # don't queue later sentences for playback yet (they could play first).
+            if not self._tts_unleashed:
+                self._pending_tts_sentences.append(clean)
+            else:
+                _tts.speak(clean, self.tts_voice)
 
     # ── Send ──────────────────────────────────────────────────────────────────
     def send(self):
@@ -2114,6 +2059,14 @@ class MainWindow(QMainWindow):
         self._tts_unleashed = not (self.tts_on and _tts and _tts.is_ready())
         self._chunk_buffer  = ""
         self._first_sentence_sent = False
+        self._pending_tts_sentences = []
+        self._reveal_active = False
+        self._reveal_pos = 0
+        self._latest_text = ""
+        if self._reveal_timer:
+            try: self._reveal_timer.stop()
+            except Exception: pass
+            self._reveal_timer = None
 
         show_think = self.think_on and is_local
         self._current_ai = AIMessage(show_think=show_think)
@@ -2130,30 +2083,87 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _abort(self):
+        # Abort should immediately stop any audio + reveal + queued sentences,
+        # and tell the stream worker to stop so the UI is ready for the next send.
         self._stop_evt.set()
-        if _tts: _tts.stop()
+        try:
+            if self._reveal_timer: self._reveal_timer.stop()
+        except Exception:
+            pass
+        self._reveal_active = False
+        self._pending_tts_sentences = []
+        try:
+            if _tts: _tts.stop()
+        except Exception:
+            pass
+        # Status will reset via _on_stream_done which always fires after abort
 
     # ── Stream callbacks ──────────────────────────────────────────────────────
     def _on_chunk(self, text):
         if not self._current_ai: return
+        self._latest_text = text
         if self.tts_on and not self._tts_unleashed:
             # Buffer chunks until first sentence prebake is ready
             self._chunk_buffer = text  # StreamWorker sends full accumulated text each chunk
             # Don't update display — throat clearing animation is showing
         else:
-            self._current_ai.update_resp(text)
-            self._scroll_bottom()
+            # If we're still revealing buffered text (type-on), don't jump ahead.
+            if not self._reveal_active:
+                self._current_ai.update_resp(text)
+                self._scroll_bottom()
 
     def _on_unleash(self, buffered_text):
         """First sentence prebaked — show all buffered text and start voice simultaneously."""
         if not self._current_ai: return
+        if self._stop_evt.is_set(): return
         self._tts_unleashed = True
         self._current_ai.stop_throat_clearing()
-        if buffered_text:
-            self._current_ai.update_resp(buffered_text)
+        self._latest_text = buffered_text or self._latest_text
+
+        # Start gradually revealing buffered text (prevents "text explosion").
+        self._reveal_active = True
+        self._reveal_pos = 0
+        if self._reveal_timer is None:
+            self._reveal_timer = QTimer(self)
+            self._reveal_timer.timeout.connect(self._reveal_step)
+        self._reveal_timer.start(18)
+
         self._scroll_bottom()
         # Play the prebaked first sentence
         if _tts: _tts.play_prebaked(100)
+        # Flush any queued sentences now that the first one is guaranteed to play first
+        if self._pending_tts_sentences and _tts and _tts.is_ready():
+            for s in self._pending_tts_sentences:
+                _tts.speak(s, self.tts_voice)
+        self._pending_tts_sentences = []
+
+    def _reveal_step(self):
+        if not self._current_ai:
+            try:
+                if self._reveal_timer: self._reveal_timer.stop()
+            except Exception:
+                pass
+            self._reveal_active = False
+            return
+
+        target = self._latest_text or ""
+        if not target:
+            return
+
+        # Reveal in small chunks for smoothness without heavy re-rendering per char.
+        step = 12
+        self._reveal_pos = min(len(target), self._reveal_pos + step)
+        shown = target[: self._reveal_pos]
+        self._current_ai.update_resp(shown)
+        self._scroll_bottom()
+
+        if self._reveal_pos >= len(target):
+            # Caught up — switch back to normal streaming updates
+            try:
+                if self._reveal_timer: self._reveal_timer.stop()
+            except Exception:
+                pass
+            self._reveal_active = False
 
     def _on_think(self, text):
         if self._current_ai: self._current_ai.update_think(text); self._scroll_bottom()
@@ -2163,6 +2173,12 @@ class MainWindow(QMainWindow):
         self.s_time.setText(f"{elapsed:.1f}s")
 
     def _on_stream_done(self, text, aborted):
+        # Stop any pending reveal
+        try:
+            if self._reveal_timer: self._reveal_timer.stop()
+        except Exception:
+            pass
+        self._reveal_active = False
         if self._current_ai:
             # If TTS never unleashed (very short response or TTS off), show text now
             if not self._tts_unleashed and self._current_ai:
@@ -2173,22 +2189,8 @@ class MainWindow(QMainWindow):
         if not aborted:
             self.history.append({"role":"assistant","content":text})
             save_conv(self._conv_id, conv_title(self.history), self.history)
-            for tag, arg in parse_commands(text):
-                result = execute_pc_command(tag, arg, confirm_cb=self._confirm_destructive)
-                if result:
-                    self._add_widget(SystemMessage(f"◈  {result}", ACCENT))
         self.busy = False; self.send_btn.setEnabled(True)
-
-    def _confirm_destructive(self, message):
-        """Confirmation dialog for destructive commands like shutdown/restart."""
-        from PyQt6.QtWidgets import QMessageBox
-        dlg = QMessageBox(self)
-        dlg.setWindowTitle("JARVIS — Confirm")
-        dlg.setText(message)
-        dlg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        dlg.setDefaultButton(QMessageBox.StandardButton.No)
-        dlg.setStyleSheet(f"background:{BG};color:{TEXT};")
-        return dlg.exec() == QMessageBox.StandardButton.Yes
+        self._reset_status()
 
 
 if __name__=="__main__":
