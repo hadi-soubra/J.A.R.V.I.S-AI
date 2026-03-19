@@ -30,7 +30,17 @@ for _d in [DATA_DIR, CONV_DIR, VOICE_DIR]: os.makedirs(_d, exist_ok=True)
 OLLAMA_HOST       = "127.0.0.1"
 OLLAMA_PORT       = 11434
 OLLAMA_URL        = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+
 WIN_W, WIN_H      = 400, 780
+
+def _load_user_name():
+    key_file = os.path.join(DATA_DIR, "user_name.txt")
+    if os.path.exists(key_file):
+        return open(key_file, encoding="utf-8").read().strip()
+    return "Set your user name in jarvis_data/user_name.txt"
+USER_NAME = _load_user_name()
+
+
 def _load_api_key():
     key_file = os.path.join(DATA_DIR, "api_key.txt")
     if os.path.exists(key_file):
@@ -927,7 +937,7 @@ class UserMessage(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background:{BG};")
         layout=QVBoxLayout(self); layout.setContentsMargins(10,8,10,8); layout.setSpacing(4)
-        layout.addWidget(lbl("[ HADI ]",OK_COL,make_font(bold=True,size=9)))
+        layout.addWidget(lbl(f"[ {USER_NAME} ]",OK_COL,make_font(bold=True,size=9)))
         if attachments:
             cr=QWidget(); cr.setStyleSheet(f"background:{BG};")
             crl=QHBoxLayout(cr); crl.setContentsMargins(0,0,0,0); crl.setSpacing(4)
